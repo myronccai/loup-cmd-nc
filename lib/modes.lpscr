@@ -1,0 +1,157 @@
+@mode(host.scripted)
+
+# nc's three modes, each returning the exit status: connect (the default),
+# listen (-l, and -k to keep listening) and scan (-z). Also the -v
+# messages, worded as OpenBSD netcat words them.
+#
+# Runtime: host.scripted. A module of the script bin/nc.lpscr, interpreted
+# with it by Stage0 (`loup-bootstrap run --allow-net`): `net.tcp` exists
+# only there.
+#
+# Structure: Reporter (what -v and -vv print); then connect_mode(),
+# listen_mode() and scan_ports(). Each holds its connection in `with`, so
+# the socket is closed however the block ends; the listener is closed in a
+# `finally`.
+
+from system.time import (sleepNs);
+from .appinfo import (EXIT_OK, EXIT_FAILURE);
+from .args import (Options, NO_TIME);
+from .plan import (Plan);
+from .ports import (service_label);
+from .services import (ServiceTable);
+from .connection import (Connection, ConnectError, ListenError, open_connection, open_listener);
+from .session import (run_session, settings_from);
+from .traffic import (Traffic, Transcript);
+
+# How often a -w wait retries a refused connection.
+pub const RETRY_MS: int = 100;
+
+## What nc says on standard error. Failures to connect and the progress
+## messages need -v; a name that cannot be resolved is always reported.
+pub class Reporter {
+    let verbose: int;
+    let numeric: bool;
+    let services: ServiceTable;
+
+    pub func constructor(verbose: int, numeric: bool, services: ServiceTable) {
+        this.verbose = verbose;
+        this.numeric = numeric;
+        this.services = services;
+    }
+
+    ## `[tcp/ssh]`; with -n OpenBSD netcat does not look the name up.
+    pub func service(port: int): string {
+        let label = if (this.numeric) { "*" } else { service_label(port, this.services) };
+        return i"[tcp/{$ label $}]";
+    }
+
+    pub func connected(conn: Connection): void {
+        if (this.verbose > 0) {
+            printErr(i"Connection to {$ conn.host $} {$ conn.port $} port {$ this.service(conn.port) $} succeeded!");
+        }
+    }
+
+    pub func failed(e: ConnectError): void {
+        if (e.lookup) {
+            printErr(i"nc: getaddrinfo for host \"{$ e.host $}\" port {$ e.port $}: {$ e.reason $}");
+        } else if (this.verbose > 0) {
+            printErr("nc: " + e.message);
+        }
+    }
+
+    pub func listening(address: string, port: int): void {
+        if (this.verbose > 0) {
+            printErr(i"Listening on {$ address $} {$ port $}");
+        }
+    }
+
+    pub func received(): void {
+        if (this.verbose > 0) {
+            printErr("Connection received");
+        }
+    }
+
+    pub func finished(traffic: Traffic): void {
+        if (this.verbose > 1) {
+            printErr(i"Sent {$ traffic.sent() $} bytes, received {$ traffic.received() $} bytes");
+        }
+    }
+}
+
+func pause(ms: int): void {
+    if (ms > 0) {
+        sleepNs(ms * 1_000_000);
+    }
+}
+
+## Connect to the first port that accepts and relay over it. A host that
+## does not resolve ends the search: every port would fail the same way.
+pub func connect_mode(plan: Plan, o: Options, payload: bytes, transcript: Transcript, report: Reporter): int {
+    for (port in plan.ports) {
+        try {
+            with (conn = open_connection(plan.host, port, numeric = o.numeric, wait_ms = o.wait_ms, poll_ms = RETRY_MS)) {
+                report.connected(conn);
+                report.finished(run_session(conn, payload, transcript, settings_from(o)));
+            }
+            return EXIT_OK;
+        } catch (ConnectError as e) {
+            report.failed(e);
+            if (e.lookup) {
+                return EXIT_FAILURE;
+            }
+        }
+    }
+    return EXIT_FAILURE;
+}
+
+## Connect to each port and close again at once, sending nothing (-z). The
+## status is 0 when any port accepted.
+pub func scan_ports(plan: Plan, o: Options, report: Reporter): int {
+    var open = 0;
+    for (k in 0..plan.ports.len()) {
+        if (k > 0 and o.interval_ms != NO_TIME) {
+            pause(o.interval_ms);
+        }
+        try {
+            with (conn = open_connection(plan.host, plan.ports[k], numeric = o.numeric, wait_ms = o.wait_ms, poll_ms = RETRY_MS)) {
+                report.connected(conn);
+            }
+            open += 1;
+        } catch (ConnectError as e) {
+            report.failed(e);
+            if (e.lookup) {
+                return EXIT_FAILURE;
+            }
+        }
+    }
+    return if (open > 0) { EXIT_OK } else { EXIT_FAILURE };
+}
+
+## Wait for a client and relay over its connection; with -k, then wait for
+## the next one, until the program is stopped. Each client gets the same
+## payload.
+pub func listen_mode(plan: Plan, o: Options, payload: bytes, transcript: Transcript, report: Reporter): int {
+    var listener: Option[TcpListener] = None;
+    try {
+        listener = Some(open_listener(plan.host, plan.ports[0]));
+    } catch (ListenError as e) {
+        printErr("nc: " + e.message);
+        return EXIT_FAILURE;
+    }
+    let server = listener.unwrap();
+    try {
+        let (address, port) = server.addr();
+        report.listening(address, port);
+        # At least one client; more while -k says to keep listening.
+        do {
+            let socket = server.accept();
+            with (conn = Connection(socket, address, port)) {
+                report.received();
+                report.finished(run_session(conn, payload, transcript, settings_from(o)));
+            }
+        } while (o.keep_listening);
+    } finally {
+        server.close();
+    }
+    return EXIT_OK;
+}

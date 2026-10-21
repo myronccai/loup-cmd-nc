@@ -1,46 +1,54 @@
-# Build, check and test commands for this Loup command-line application.
+# Check, test and run commands for this host-scripted Loup project.
 #
-# On Linux x86-64 `loup` is the self-hosted driver and `loup-bootstrap` is
-# Stage0; `check` and `test` need Stage0 there. On macOS, Windows and Linux
-# arm64 both names run Stage0, so these targets work unchanged.
+# The program is a script (bin/nc.lpscr) run from source; a script entry
+# cannot be compiled (E-BUILD-COMPILED), so there is no build target. It
+# runs under Stage0 (`loup-bootstrap run`): on Linux x86-64 the self-hosted
+# `loup run` has no `net.tcp`, and Stage0 enforces the capability grants
+# the program is given (file system and network only). On macOS, Windows
+# and Linux arm64 `loup` and `loup-bootstrap` are both Stage0.
 
-APP            ?= myapp
-LOUP           ?= loup
+APP            ?= nc
 LOUP_BOOTSTRAP ?= loup-bootstrap
-BUILD_DIR      ?= build
-BIN            := $(BUILD_DIR)/$(APP)
-SOURCES        := package.lppkg $(shell find source -name '*.loup')
+RUN            ?= $(LOUP_BOOTSTRAP) run --deny-all --allow-fs --allow-net
+SCRIPTS        := $(wildcard bin/*.lpscr)
+TESTS          ?= $(wildcard tests/*_test.lpscr)
 ARGS           ?=
 TEST_ARGS      ?=
 
-.PHONY: all run check test build ci clean
+.PHONY: all run check test e2e ci clean
 
-all: build
+all: ci
 
-# Run from source, e.g. `make run ARGS="hello Ann --shout"`.
+# Run from source, e.g. `make run ARGS="-zv 127.0.0.1 20-25"`.
+# The arguments follow `--` so that Stage0 passes them all to the script.
 run:
-	$(LOUP) run source/main.loup -- $(ARGS)
+	$(RUN) bin/$(APP).lpscr -- $(ARGS)
 
-# Type-check source/main.loup and every module it imports.
+# Type-check each entry script and every lib/ module it imports.
 check:
-	$(LOUP_BOOTSTRAP) check --no-color
+	@for script in $(SCRIPTS); do \
+		echo "check $$script"; \
+		$(LOUP_BOOTSTRAP) check --no-color $$script || exit 1; \
+	done
 
-# Tests import project modules by their path under source/ (`from cli.args
-# import (...)`), the same way the sources do, so source/ goes on LOUPPATH.
-# Narrow the run with TEST_ARGS, e.g. `make test TEST_ARGS="--filter value"`.
+# Unit tests (tests/*_test.lpscr), one file at a time and one test at a
+# time (--no-parallel): in parallel, the 1.26.0 runner fails random tests
+# with an empty RuntimeError on a busy machine. The runner grants no
+# network, so they open no socket; traffic_test writes under build/tmp/.
+# Narrow the run: `make test TESTS=tests/args_test.lpscr TEST_ARGS="--filter values"`.
 test:
-	LOUPPATH=source$${LOUPPATH:+:$$LOUPPATH} $(LOUP_BOOTSTRAP) test $(TEST_ARGS)
+	@status=0; for t in $(TESTS); do \
+		$(LOUP_BOOTSTRAP) test --no-color --no-parallel --file $$t $(TEST_ARGS) || status=1; \
+	done; exit $$status
 
-# Native executable (needs clang). Windows writes $(BIN).exe.
-build: $(BIN)
+# End-to-end tests: nc against nc on 127.0.0.1 (listeners in the
+# background on free ports, always stopped), and the command-line errors.
+e2e:
+	bash tests/e2e.sh $(LOUP_BOOTSTRAP)
 
-$(BIN): $(SOURCES)
-	@mkdir -p $(BUILD_DIR)
-	$(LOUP) build --target native -o $@
-
-# Everything CI runs, ending with a smoke test of the built binary.
-ci: check test build
-	$(BIN) --version
+# Everything CI runs, ending with a smoke test of the entry script.
+ci: check test e2e
+	$(RUN) bin/$(APP).lpscr -- --version
 
 clean:
-	rm -rf $(BUILD_DIR) .temp
+	rm -rf build .temp .loup-cache

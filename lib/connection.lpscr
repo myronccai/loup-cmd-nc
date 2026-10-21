@@ -1,0 +1,219 @@
+@mode(host.scripted)
+
+# nc's TCP connections: opening one (with -n and -w), closing it exactly
+# once, and the stream adapters that let io.streams read and write it.
+#
+# Runtime: host.scripted. A module of the script bin/nc.lpscr, interpreted
+# with it by Stage0 (`loup-bootstrap run --allow-net`): `net.tcp` exists
+# only there, and only with the `net` capability granted.
+#
+# Structure: the error classes; Connection, the socket as a `Closeable`;
+# open_connection(), which retries with core.waiting when -w is given, and
+# open_listener(); then
+# three adapters over a connection: SocketReader (a `Readable`, for
+# BufferedReader and copyStream), SocketWriter (a `Writable` that writes
+# everything) and TextOutput (a `Writable` that prints what arrives).
+# net.tcp's TcpSocket has read() and write() but is not itself accepted
+# where io.streams wants a Readable or Writable, hence the adapters.
+
+from net.tcp import (connect, listen);
+from net.addressing import (IpAddr);
+from core.waiting import (waitForItSync, WaitContext);
+from core.time import (Duration);
+from .neterrors import (failure_reason, is_lookup_failure, is_peer_gone);
+from .text import (utf8_complete, concat);
+from .traffic import (Traffic);
+
+## Everything nc itself throws.
+pub class NcError : Exception {}
+
+## A connection that could not be made. `lookup` is true when the host name
+## could not be resolved, which no amount of retrying fixes.
+pub class ConnectError : NcError {
+    pub let host: string;
+    pub let port: int;
+    pub let reason: string;
+    pub let lookup: bool;
+
+    new(host: string, port: int, reason: string, lookup: bool) {
+        super(i"connect to {$ host $} port {$ port $} (tcp) failed: {$ reason $}");
+        this.host = host;
+        this.port = port;
+        this.reason = reason;
+        this.lookup = lookup;
+    }
+}
+
+## The address to listen on could not be bound; the message is the reason.
+pub class ListenError : NcError {}
+
+## A socket and where it leads. `with (c = ...)` closes it at the end of the
+## block; the session may close it earlier (-q). Whoever is first closes the
+## socket, the other call does nothing: TcpSocket.close() throws when called
+## twice.
+pub class Connection implements Closeable, Sendable {
+    pub let socket: TcpSocket;
+    pub let host: string;
+    pub let port: int;
+    let closed: Atomic[int] = Atomic.new(0);
+
+    pub func constructor(socket: TcpSocket, host: string, port: int) {
+        this.socket = socket;
+        this.host = host;
+        this.port = port;
+    }
+
+    pub func close(): void {
+        if (this.closed.exchange(1) == 0) {
+            this.socket.close();
+        }
+    }
+
+    pub func is_closed(): bool {
+        return this.closed.load() == 1;
+    }
+}
+
+# One attempt to connect.
+func connect_once(host: string, port: int): Connection {
+    try {
+        return Connection(connect(host, port), host, port);
+    } catch (IoError as e) {
+        throw ConnectError(host, port, failure_reason(e.message), is_lookup_failure(e.message)) from e;
+    }
+}
+
+## Connect to `host` on `port`. With `numeric` (-n) the host must be an IP
+## address: there is no lookup to fall back on. With `wait_ms` (-w; NO_TIME
+## is negative) a refused or unreachable connection is tried again every
+## `poll_ms` until the time is up, so that a client can be started before
+## its server; the error then is the last attempt's.
+pub func open_connection(host: string, port: int, numeric: bool = false, wait_ms: int = -1,
+        poll_ms: int = 100): Connection {
+    if (numeric and !IpAddr.isValid(host)) {
+        throw ConnectError(host, port, "Name or service not known", true);
+    }
+    if (wait_ms < 0) {
+        return connect_once(host, port);
+    }
+    var opened: Option[Connection] = None;
+    var last_reason = "";
+    try {
+        waitForItSync(func(edits ctx: WaitContext): bool {
+            nonlocal opened;
+            nonlocal last_reason;
+            try {
+                opened = Some(connect_once(host, port));
+                return true;
+            } catch (ConnectError as e) {
+                if (e.lookup) {
+                    throw e;
+                }
+                last_reason = e.reason;
+                return false;
+            }
+        }, i"a connection to {$ host $} port {$ port $}", Duration.ofMillis(0), Duration.ofMillis(poll_ms), Duration.ofMillis(wait_ms));
+    } catch (TimeoutError as e) {
+        throw ConnectError(host, port, last_reason, false) from e;
+    }
+    return opened.unwrap();
+}
+
+## A listening socket on `address` and `port` (0: any free port).
+pub func open_listener(address: string, port: int): TcpListener {
+    try {
+        return listen(address, port);
+    } catch (IoError as e) {
+        throw ListenError(failure_reason(e.message)) from e;
+    }
+}
+
+## The connection as an io.streams `Readable`: read(n) gives up to n bytes as
+## they arrive, and empty bytes once the peer has closed its side (or reset
+## the connection, or this side closed it). Every chunk is counted and
+## recorded in the Traffic.
+pub class SocketReader implements Readable {
+    let connection: Connection;
+    let traffic: Traffic;
+
+    pub func constructor(connection: Connection, traffic: Traffic) {
+        this.connection = connection;
+        this.traffic = traffic;
+    }
+
+    pub func read(n: int): bytes {
+        if (this.connection.is_closed()) {
+            return b"";
+        }
+        try {
+            let chunk = this.connection.socket.read(n);
+            this.traffic.note_received(chunk);
+            return chunk;
+        } catch (IoError as e) {
+            if (is_peer_gone(e.message)) {
+                return b"";
+            }
+            throw e;
+        }
+    }
+}
+
+## The connection as an io.streams `Writable`. TcpSocket.write() may take
+## only part of the data; this writes all of it or throws.
+pub class SocketWriter implements Writable {
+    let connection: Connection;
+    let traffic: Traffic;
+
+    pub func constructor(connection: Connection, traffic: Traffic) {
+        this.connection = connection;
+        this.traffic = traffic;
+    }
+
+    pub func write(data: bytes): int {
+        var written = 0;
+        while (written < data.len()) {
+            let rest = if (written == 0) { data } else { data.slice(written, data.len()) };
+            let n = this.connection.socket.write(rest);
+            if (n <= 0) {
+                throw NcError("the connection accepted no more data");
+            }
+            written += n;
+        }
+        this.traffic.note_sent(data);
+        return written;
+    }
+}
+
+## Standard output as an io.streams `Writable` for received data. Text goes
+## out as it arrives, except that the bytes of a UTF-8 character cut in two
+## by the network wait for the rest of it; `finish()` prints whatever is
+## still held back at the end. Once the session has given up on the
+## receiver, nothing more is printed.
+pub class TextOutput implements Writable {
+    let traffic: Traffic;
+    var pending: bytes = b"";
+
+    pub func constructor(traffic: Traffic) {
+        this.traffic = traffic;
+    }
+
+    pub modifier func write(data: bytes): int {
+        if (this.traffic.has_given_up()) {
+            return data.len();
+        }
+        let all = if (this.pending.len() == 0) { data } else { concat(this.pending, data) };
+        let complete = utf8_complete(all);
+        if (complete > 0) {
+            print(all.slice(0, complete).decode());
+        }
+        this.pending = all.slice(complete, all.len());
+        return data.len();
+    }
+
+    pub modifier func finish(): void {
+        if (this.pending.len() > 0 and !this.traffic.has_given_up()) {
+            print(this.pending.decode());
+        }
+        this.pending = b"";
+    }
+}

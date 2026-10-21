@@ -1,0 +1,69 @@
+@mode(host.dual)
+
+# nc's -o hex dump, in the traditional netcat's format:
+#
+#   > 00000000 47 45 54 20 2f 20 48 54 54 50 2f 31 2e 30 0d 0a # GET / HTTP/1.0..
+#   < 00000000 48 54 54 50 2f 31 2e 30 20 32 30 30 20 4f 4b 0d # HTTP/1.0 200 OK.
+#
+# `>` is data sent, `<` data received; each direction counts its own offset.
+# Every chunk starts a new line, so the lines show how the data was cut up
+# on the wire. Bytes outside printable ASCII appear as `.` after the `#`.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# lib/traffic.lpscr imports it under `loup-bootstrap run --allow-net`, and
+# tests/hexdump_test.lpscr under `loup-bootstrap test`. Nothing in this
+# project compiles it.
+
+const HEX_DIGITS: string = "0123456789abcdef";
+pub const BYTES_PER_LINE: int = 16;
+
+pub const SENT: string = ">";
+pub const RECEIVED: string = "<";
+
+## `value` in lowercase hexadecimal, zero-padded to `width` digits (wider
+## values keep all their digits).
+pub func hex(value: int, width: int): string {
+    var digits = "";
+    var rest = value;
+    while (rest > 0) {
+        digits = HEX_DIGITS.slice(rest % 16, rest % 16 + 1) + digits;
+        rest = rest / 16;
+    }
+    while (digits.len() < width) {
+        digits = "0" + digits;
+    }
+    return digits;
+}
+
+## A byte as the dump's text column shows it.
+pub func shown(b: int): string {
+    if (b >= 32 and b < 127) {
+        return str(char.of(b));
+    }
+    return ".";
+}
+
+## The dump lines for `data`, which starts `offset` bytes into its direction.
+pub func dump_lines(direction: string, offset: int, data: bytes): list[string] {
+    var lines: list[string] = [];
+    var start = 0;
+    while (start < data.len()) {
+        var stop = start + BYTES_PER_LINE;
+        if (stop > data.len()) {
+            stop = data.len();
+        }
+        var codes: list[string] = [];
+        var text = "";
+        for (k in start..stop) {
+            codes.push(hex(data[k], 2));
+            text += shown(data[k]);
+        }
+        # A short last line is padded so that the text column lines up.
+        for (_ in stop..(start + BYTES_PER_LINE)) {
+            codes.push("  ");
+        }
+        lines.push(i"{$ direction $} {$ hex(offset + start, 8) $} {$ codes.join(" ") $} # {$ text $}");
+        start = stop;
+    }
+    return lines;
+}

@@ -1,0 +1,64 @@
+@mode(host.scripted)
+
+# Unit tests for nc's plans (lib/plan.loup): the three modes, the listen
+# operands with and without -s and -p, and the operand errors.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/plan_test.lpscr`), one test per `func test_*()`. It reads
+# tests/fixtures/services and imports lib/ by relative path; it is not part
+# of the program.
+
+from debug.assert import (expect, expectEq);
+from ..lib.args import (Options, parse_args);
+from ..lib.services import (ServiceTable, load_services);
+from ..lib.plan import (Plan, Mode, make_plan, mode_name, ANY_ADDRESS);
+
+func plan_of(argv: list[string]): Plan {
+    let o = parse_args(argv).unwrap();
+    return make_plan(o, load_services("tests/fixtures/services")).unwrap();
+}
+
+# The plan as one line, or the error (with "+" when the hint goes with it).
+func shown(argv: list[string]): string {
+    let o = parse_args(argv).unwrap();
+    return match make_plan(o, load_services("tests/fixtures/services")) {
+        Ok(p) => i"{$ mode_name(p.mode) $} {$ p.host $} {$ p.ports.join(",") $}",
+        Err(e) => if (e.hint) { "+" + e.message } else { e.message },
+    };
+}
+
+func test_connect(): void {
+    expectEq(shown(["example.org", "80"]), "connect example.org 80", "one port");
+    expectEq(shown(["10.0.0.1", "ssh", "8000-8002"]), "connect 10.0.0.1 22,8000,8001,8002", "several");
+    let p = plan_of(["h", "1"]);
+    expect(p.mode == Mode.Connect, "mode");
+}
+
+func test_scan(): void {
+    expectEq(shown(["-z", "127.0.0.1", "20-22"]), "scan 127.0.0.1 20,21,22", "range");
+    expect(plan_of(["-z", "h", "1"]).mode == Mode.Scan, "mode");
+}
+
+func test_listen(): void {
+    expectEq(shown(["-l", "9000"]), "listen 0.0.0.0 9000", "port only");
+    expectEq(shown(["-l", "127.0.0.1", "9000"]), "listen 127.0.0.1 9000", "address and port");
+    expectEq(shown(["-l", "-p", "9000"]), "listen 0.0.0.0 9000", "-p");
+    expectEq(shown(["-l", "-s", "::1", "-p", "9000"]), "listen ::1 9000", "-s and -p");
+    expectEq(shown(["-l", "-p", "9000", "127.0.0.1"]), "listen 127.0.0.1 9000", "-p and an address");
+    expectEq(shown(["-l", "-s", "127.0.0.1", "9000"]), "listen 127.0.0.1 9000", "-s and a port");
+    expectEq(shown(["-l", "0"]), "listen 0.0.0.0 0", "a free port");
+    expectEq(shown(["-l", "http"]), "listen 0.0.0.0 80", "a service name");
+    expectEq(ANY_ADDRESS, "0.0.0.0", "default address");
+}
+
+func test_errors(): void {
+    expectEq(shown([]), "+missing destination and port", "nothing");
+    expectEq(shown(["example.org"]), "missing port number", "no port");
+    expectEq(shown(["-z", "h", "x-1"]), "port number invalid: x", "bad range");
+    expectEq(shown(["-l"]), "missing port number", "listen without a port");
+    expectEq(shown(["-l", "a", "b", "9000"]), "+extra operand 'b'", "listen with too much");
+    expectEq(shown(["-l", "-s", "a", "b", "9000"]), "+extra operand 'b'", "-s and an address");
+    expectEq(shown(["-l", "1-5"]), "port number invalid: 1-5", "no range when listening");
+    expectEq(shown(["-l", "70000"]), "port number too large: 70000", "listen port too large");
+}

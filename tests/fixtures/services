@@ -1,0 +1,21 @@
+# A services(5) file for the unit tests: a few real entries and the cases
+# the parser must handle (aliases, udp-only lines, comments, blank lines,
+# a duplicate port, bad port numbers).
+
+echo		7/tcp
+echo		7/udp
+ssh		22/tcp				# SSH Remote Login Protocol
+smtp		25/tcp		mail
+domain		53/tcp				# Domain Name Server
+domain		53/udp
+http		80/tcp		www		# WorldWideWeb HTTP
+www-alt		80/tcp
+syslog		514/udp
+kerberos-adm	749/tcp				# Kerberos `kadmin' (v5)
+http-alt	8080/tcp	webcache	# WWW caching service
+
+   # an indented comment
+broken		99999/tcp
+noport		/tcp
+nosuch		abc/tcp
+lonely

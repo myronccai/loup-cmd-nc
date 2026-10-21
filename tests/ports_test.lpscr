@@ -1,0 +1,82 @@
+@mode(host.scripted)
+
+# Unit tests for nc's port operands (lib/ports.loup): numbers and their
+# limits, service names, ranges in both orders, lists, and the labels of
+# the -v messages.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/ports_test.lpscr`), one test per `func test_*()`. It reads
+# tests/fixtures/services and imports lib/ by relative path; it is not part
+# of the program.
+
+from debug.assert import (expect, expectEq);
+from ..lib.services import (ServiceTable, load_services);
+from ..lib.ports import (parse_port, parse_port_range, parse_port_list, service_label);
+
+func services(): ServiceTable {
+    return load_services("tests/fixtures/services");
+}
+
+func port_error(text: string, allow_zero: bool): string {
+    return match parse_port(text, services(), allow_zero) {
+        Ok(p) => i"port {$ p $}",
+        Err(message) => message,
+    };
+}
+
+func listed(operands: list[string]): string {
+    return match parse_port_list(operands, services()) {
+        Ok(ports) => ports.join(","),
+        Err(message) => message,
+    };
+}
+
+func test_numbers(): void {
+    let t = services();
+    expectEq(parse_port("1", t, false).unwrap(), 1, "lowest");
+    expectEq(parse_port("65535", t, false).unwrap(), 65535, "highest");
+    expectEq(parse_port("080", t, false).unwrap(), 80, "leading zero");
+    expectEq(parse_port("0", t, true).unwrap(), 0, "zero when listening");
+}
+
+func test_number_errors(): void {
+    expectEq(port_error("0", false), "port number too small: 0", "zero");
+    expectEq(port_error("65536", false), "port number too large: 65536", "just too large");
+    expectEq(port_error("99999999999999999999", false), "port number too large: 99999999999999999999", "huge");
+    expectEq(port_error("x", false), "port number invalid: x", "not a service");
+    expectEq(port_error("", false), "port number invalid: ", "empty");
+    expectEq(port_error("-5", false), "port number invalid: -5", "negative");
+}
+
+func test_names(): void {
+    let t = services();
+    expectEq(parse_port("ssh", t, false).unwrap(), 22, "ssh");
+    expectEq(parse_port("www", t, false).unwrap(), 80, "alias");
+    expect(parse_port("SSH", t, false).is_err(), "names are case-sensitive");
+}
+
+func test_ranges(): void {
+    let t = services();
+    expectEq(parse_port_range("20-23", t).unwrap().join(","), "20,21,22,23", "range");
+    expectEq(parse_port_range("23-20", t).unwrap().join(","), "20,21,22,23", "reversed");
+    expectEq(parse_port_range("22-22", t).unwrap().join(","), "22", "one port");
+    expectEq(parse_port_range("echo-ssh", t).unwrap().len(), 16, "names as bounds");
+    expectEq(parse_port_range("kerberos-adm", t).unwrap().join(","), "749", "a dashed service name");
+    expectEq(parse_port_range("22-x", t).unwrap_err(), "port number invalid: x", "bad high end");
+    expectEq(parse_port_range("0-5", t).unwrap_err(), "port number too small: 0", "zero low end");
+}
+
+func test_lists(): void {
+    expectEq(listed(["22", "80"]), "22,80", "two ports");
+    expectEq(listed(["ssh", "79-81", "22"]), "22,79,80,81,22", "mixed, duplicates kept");
+    expectEq(listed(["22", "nope", "80"]), "port number invalid: nope", "the first error");
+    expectEq(listed([]), "", "none");
+}
+
+func test_labels(): void {
+    let t = services();
+    expectEq(service_label(22, t), "ssh", "named");
+    expectEq(service_label(80, t), "http", "first name");
+    expectEq(service_label(47123, t), "*", "unnamed");
+}

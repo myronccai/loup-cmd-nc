@@ -1,0 +1,47 @@
+@mode(host.scripted)
+
+# Unit tests for nc's reading of network errors (lib/neterrors.loup), with
+# the messages Stage0's net.tcp really gives.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/neterrors_test.lpscr`), one test per `func test_*()`. It imports
+# lib/ by relative path and opens no socket; it is not part of the program.
+
+from debug.assert import (expect, expectEq);
+from ..lib.neterrors import (failure_reason, is_lookup_failure, is_peer_gone);
+
+const REFUSED: string = "tcp_connect failed on '127.0.0.1:9': Connection refused (os error 111)";
+const NO_HOST: string = "tcp_connect failed on 'nosuch.invalid:80': failed to lookup address information: Name or service not known";
+const IN_USE: string = "tcp_bind failed on '127.0.0.1:8080': Address already in use (os error 98)";
+const DENIED: string = "tcp_bind failed on '127.0.0.1:22': Permission denied (os error 13)";
+const PIPE: string = "tcp_write failed on '<tcp_socket>': Broken pipe (os error 32)";
+const RESET: string = "tcp_read failed on '<tcp_socket>': Connection reset by peer (os error 104)";
+const CLOSED: string = "read failed on '<tcp_socket>': socket is closed";
+
+func test_reasons(): void {
+    expectEq(failure_reason(REFUSED), "Connection refused", "refused");
+    expectEq(failure_reason(NO_HOST), "Name or service not known", "lookup");
+    expectEq(failure_reason(IN_USE), "Address already in use", "in use");
+    expectEq(failure_reason(DENIED), "Permission denied", "denied");
+    expectEq(failure_reason(PIPE), "Broken pipe", "pipe");
+    expectEq(failure_reason(CLOSED), "socket is closed", "closed");
+}
+
+func test_reason_of_other_text(): void {
+    expectEq(failure_reason("something else"), "something else", "kept as it is");
+    expectEq(failure_reason("x (os error 5)"), "x", "suffix only");
+}
+
+func test_lookup(): void {
+    expect(is_lookup_failure(NO_HOST), "lookup failure");
+    expect(!is_lookup_failure(REFUSED), "refused is not");
+}
+
+func test_peer_gone(): void {
+    expect(is_peer_gone(PIPE), "broken pipe");
+    expect(is_peer_gone(RESET), "reset");
+    expect(is_peer_gone(CLOSED), "closed here");
+    expect(!is_peer_gone(REFUSED), "refused");
+    expect(!is_peer_gone(DENIED), "denied");
+}

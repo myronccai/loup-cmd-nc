@@ -1,0 +1,133 @@
+@mode(host.scripted)
+
+# Unit tests for nc's command-line parser (lib/args.loup): flags and
+# clusters, values attached and separate, operands around options, `--`,
+# the times, the usage errors and their wording, and options that do not go
+# together.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/args_test.lpscr`), one test per `func test_*()`. It imports lib/ by
+# relative path and opens no socket; it is not part of the program.
+
+from debug.assert import (expect, expectEq);
+from ..lib.args import (Options, ArgError, NO_TIME, parse_args, parse_seconds, default_options, check_combination);
+from ..lib.usage import (usage, version_line);
+
+func ok(argv: list[string]): Options {
+    let parsed = parse_args(argv);
+    expect(parsed.is_ok(), i"parse {$ argv.join(" ") $}");
+    return parsed.unwrap();
+}
+
+# The message, with a "+" in front when the hint line goes with it.
+func err(argv: list[string]): string {
+    return match parse_args(argv) {
+        Ok(o) => "parsed",
+        Err(e) => if (e.hint) { "+" + e.message } else { e.message },
+    };
+}
+
+func test_defaults(): void {
+    let o = ok(["host", "80"]);
+    expect(!o.listen and !o.scan and !o.keep_listening, "modes off");
+    expect(!o.numeric and !o.no_stdin and !o.crlf, "flags off");
+    expectEq(o.verbose, 0, "verbose");
+    expectEq(o.wait_ms, NO_TIME, "wait");
+    expectEq(o.quit_ms, NO_TIME, "quit");
+    expectEq(o.interval_ms, NO_TIME, "interval");
+    expectEq(o.dump_file, "", "dump file");
+    expectEq(o.operands.join(" "), "host 80", "operands");
+}
+
+func test_flags_and_clusters(): void {
+    let o = ok(["-l", "-v", "-k", "9000"]);
+    expect(o.listen and o.keep_listening, "separate flags");
+    expectEq(o.verbose, 1, "one -v");
+    let c = ok(["-lvkvn", "9000"]);
+    expect(c.listen and c.keep_listening and c.numeric, "cluster");
+    expectEq(c.verbose, 2, "-v twice in a cluster");
+    let more = ok(["-Cd", "-z", "h", "1"]);
+    expect(more.crlf and more.no_stdin and more.scan, "C d z");
+}
+
+func test_values(): void {
+    expectEq(ok(["-w", "5", "h", "1"]).wait_ms, 5000, "separate value");
+    expectEq(ok(["-w5", "h", "1"]).wait_ms, 5000, "attached value");
+    expectEq(ok(["-vw2", "h", "1"]).wait_ms, 2000, "value ends a cluster");
+    expectEq(ok(["-q", "0", "h", "1"]).quit_ms, 0, "-q 0");
+    expectEq(ok(["-q", "-1", "h", "1"]).quit_ms, NO_TIME, "negative -q waits");
+    expectEq(ok(["-i", "0.25", "h", "1"]).interval_ms, 250, "fraction");
+    expectEq(ok(["-o", "dump.txt", "h", "1"]).dump_file, "dump.txt", "-o");
+    let l = ok(["-l", "-p", "8080", "-s", "127.0.0.1"]);
+    expectEq(l.local_port, "8080", "-p");
+    expectEq(l.source_address, "127.0.0.1", "-s");
+}
+
+func test_operands_anywhere(): void {
+    let o = ok(["example.org", "-v", "80", "-w", "3"]);
+    expectEq(o.operands.join(" "), "example.org 80", "options after operands");
+    expectEq(o.verbose, 1, "verbose after the host");
+    let d = ok(["--", "-v", "80"]);
+    expectEq(d.operands.join(" "), "-v 80", "-- ends the options");
+    expectEq(d.verbose, 0, "-v after -- is an operand");
+    expectEq(ok(["-", "80"]).operands.join(" "), "- 80", "a lone dash is an operand");
+}
+
+func test_help_and_version(): void {
+    expect(ok(["-h"]).help, "-h");
+    expect(ok(["--help"]).help, "--help");
+    expect(ok(["--version"]).version, "--version");
+    # Help wins over options that would not go together.
+    expect(ok(["-k", "--help"]).help, "help before the combination check");
+    expect(usage().startsWith("usage: nc [OPTION]... DESTINATION PORT..."), "usage line");
+    expect(usage().contains("  -w SECONDS"), "usage lists -w");
+    expectEq(version_line(), "nc (loup-cmd-nc) 0.1.0", "version line");
+}
+
+func test_getopt_errors(): void {
+    expectEq(err(["-Y"]), "+invalid option -- 'Y'", "unknown letter");
+    expectEq(err(["-lY", "1"]), "+invalid option -- 'Y'", "unknown letter in a cluster");
+    expectEq(err(["-4", "h", "1"]), "+invalid option -- '4'", "OpenBSD option not here");
+    expectEq(err(["h", "1", "-w"]), "+option requires an argument -- 'w'", "missing value");
+    expectEq(err(["--bogus"]), "+unrecognized option '--bogus'", "long option");
+    expectEq(err(["--help=yes"]), "+unrecognized option '--help=yes'", "long option with a value");
+}
+
+func test_time_errors(): void {
+    expectEq(err(["-w", "abc", "h", "1"]), "timeout invalid: abc", "-w");
+    expectEq(err(["-w", "-1", "h", "1"]), "timeout invalid: -1", "-w negative");
+    expectEq(err(["-q", "1x", "h", "1"]), "quit timer invalid: 1x", "-q");
+    expectEq(err(["-i", "", "h", "1"]), "interval invalid: ", "-i empty");
+    expectEq(err(["-i", ".", "h", "1"]), "interval invalid: .", "-i dot");
+    expectEq(err(["-o", "", "h", "1"]), "-o needs a file name", "-o empty");
+}
+
+func test_combination_errors(): void {
+    expectEq(err(["-k", "h", "1"]), "must use -l with -k", "-k alone");
+    expectEq(err(["-lz", "1"]), "cannot use -z and -l", "-z and -l");
+    expectEq(err(["-p", "1", "h", "2"]), "-p needs -l: the local port of a connection cannot be chosen", "-p");
+    expectEq(err(["-s", "a", "h", "2"]), "-s needs -l: the local address of a connection cannot be chosen", "-s");
+    var o = default_options();
+    expect(check_combination(o).is_none(), "defaults go together");
+    o.listen = true;
+    o.keep_listening = true;
+    o.local_port = "80";
+    expect(check_combination(o).is_none(), "-lk -p");
+}
+
+func test_parse_seconds(): void {
+    expectEq(parse_seconds("0", false).unwrap(), 0, "zero");
+    expectEq(parse_seconds("12", false).unwrap(), 12000, "whole");
+    expectEq(parse_seconds("1.5", false).unwrap(), 1500, "half");
+    expectEq(parse_seconds("0.001", false).unwrap(), 1, "a millisecond");
+    expectEq(parse_seconds("2.71828", false).unwrap(), 2718, "extra digits dropped");
+    expectEq(parse_seconds(".5", false).unwrap(), 500, "no whole part");
+    expectEq(parse_seconds("5.", false).unwrap(), 5000, "no fraction");
+    expectEq(parse_seconds("-3", true).unwrap(), NO_TIME, "negative allowed");
+    expect(parse_seconds("-3", false).is_err(), "negative refused");
+    expect(parse_seconds("1e3", false).is_err(), "exponent");
+    expect(parse_seconds("1.2.3", false).is_err(), "two dots");
+    expect(parse_seconds("1234567890", false).is_err(), "too long");
+    expectEq(parse_seconds("x", false).unwrap_err(), "x", "the error is the text");
+}

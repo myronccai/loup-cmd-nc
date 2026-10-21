@@ -1,0 +1,87 @@
+@mode(host.scripted)
+
+# Unit tests for nc's traffic record (lib/traffic.lpscr) and the parts of
+# lib/connection.lpscr that need no socket: byte counts and offsets, the
+# -o transcript file, the shared flags, and -n refusing a host name before
+# any connection is tried.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/traffic_test.lpscr`), one test per `func test_*()`. The transcript
+# test writes build/tmp/traffic_test.dump. The runner grants no `net`, so
+# nothing here opens a socket; it is not part of the program.
+
+from debug.assert import (expect, expectEq, expectThrows);
+from io.fs import (createDir, readText);
+from ..lib.traffic import (Traffic, Transcript, NoTranscript, HexTranscript, open_transcript);
+from ..lib.connection import (NcError, ConnectError, open_connection);
+
+const DUMP: string = "build/tmp/traffic_test.dump";
+
+func test_counts(): void {
+    let t = Traffic(NoTranscript());
+    t.note_sent(b"hello");
+    t.note_sent(b"");
+    t.note_sent(b"!");
+    t.note_received(b"abc");
+    expectEq(t.sent(), 6, "sent");
+    expectEq(t.received(), 3, "received");
+}
+
+func test_flags(): void {
+    let t = Traffic(NoTranscript());
+    expect(!t.peer_has_closed(), "open at first");
+    expect(!t.has_given_up(), "not given up");
+    t.mark_peer_closed();
+    t.give_up();
+    expect(t.peer_has_closed(), "closed");
+    expect(t.has_given_up(), "given up");
+}
+
+func test_transcript_file(): void {
+    createDir("build/tmp");
+    let transcript = open_transcript(DUMP);
+    let t = Traffic(transcript);
+    t.note_sent(b"PING\r\n");
+    t.note_received(b"+PONG\r\n");
+    t.note_sent(b"QUIT\r\n");
+    let lines = readText(DUMP).split("\n");
+    expectEq(lines.len(), 4, "three lines and the final newline");
+    expectEq(lines[0], "> 00000000 50 49 4e 47 0d 0a                               # PING..", "first sent chunk");
+    expectEq(lines[1], "< 00000000 2b 50 4f 4e 47 0d 0a                            # +PONG..", "received");
+    expect(lines[2].startsWith("> 00000006 51 55 49 54"), "the second sent chunk continues at 6");
+    # Opening it again empties it.
+    let again = open_transcript(DUMP);
+    expectEq(readText(DUMP), "", "emptied");
+}
+
+func test_no_transcript(): void {
+    let none = open_transcript("");
+    # Recording into nothing is allowed and does nothing.
+    none.sent(0, b"x");
+    none.received(0, b"y");
+    expect(true, "no file needed");
+}
+
+func connect_numeric(): void {
+    open_connection("localhost", 22, numeric = true);
+}
+
+func test_numeric_refuses_names(): void {
+    let thrown = expectThrows(connect_numeric, "-n with a name");
+    expect(thrown is ConnectError, "a ConnectError");
+    let e = thrown as ConnectError;
+    expectEq(i"{$ e.lookup $} {$ e.host $} {$ e.port $} {$ e.reason $}", "true localhost 22 Name or service not known", "fields");
+}
+
+func test_error_message(): void {
+    let e = ConnectError("127.0.0.1", 9, "Connection refused", false);
+    expectEq(e.message, "connect to 127.0.0.1 port 9 (tcp) failed: Connection refused", "OpenBSD wording");
+    var caught = "";
+    try {
+        throw e;
+    } catch (NcError as base) {
+        caught = base.message;
+    }
+    expect(caught.startsWith("connect to"), "a ConnectError is an NcError");
+}

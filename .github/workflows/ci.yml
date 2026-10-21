@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     env:
       # Keep in step with `loup` in package.lppkg.
@@ -23,14 +23,11 @@ jobs:
       - name: Show toolchain
         run: |
           loup --version
-          clang --version
+          loup-bootstrap --version
+          python3 --version
 
-      - name: Check, test and build
+      # The program is a script: there is nothing to build. `make ci`
+      # type-checks it, runs the unit tests, and runs nc against nc on
+      # 127.0.0.1 for the end-to-end tests (python3 finds free ports).
+      - name: Check, unit tests and end-to-end tests
         run: make ci
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: myapp-linux-x86_64
-          path: build/myapp
-          if-no-files-found: error

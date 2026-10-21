@@ -1,0 +1,118 @@
+@mode(host.scripted)
+
+# nc's record of one connection's traffic: byte counts, the -o transcript,
+# and the two flags the sending and receiving threads share (the peer has
+# closed; the session has given up on the receiver).
+#
+# Runtime: host.scripted. A module of the script bin/nc.lpscr, interpreted
+# with it by Stage0 (`loup-bootstrap run --allow-net`). It is a script
+# module because its classes cross threads: Stage0 runs a `Thread` for real
+# and lets it run while another thread waits on a socket.
+#
+# Structure: the Transcript interface and its two classes (no transcript,
+# and the -o hex dump file); then Traffic, which counts the bytes, hands
+# each chunk to the transcript with its offset, and holds the flags. Every
+# field that changes is an `Atomic`, which is what lets these classes be
+# `Sendable` (shared with the receiving thread).
+
+from io.fs import (writeText, appendText);
+from .hexdump import (dump_lines, SENT, RECEIVED);
+
+## Where the bytes of a connection are recorded, if anywhere.
+pub interface Transcript {
+    func sent(offset: int, data: bytes): void;
+    func received(offset: int, data: bytes): void;
+}
+
+## No -o: nothing is recorded.
+pub class NoTranscript implements Transcript, Sendable {
+    pub func constructor() {}
+    pub func sent(offset: int, data: bytes): void {}
+    pub func received(offset: int, data: bytes): void {}
+}
+
+## -o FILE: every chunk is appended to FILE as hex dump lines. Both threads
+## append to the same file; each append is one call, so lines never mix.
+pub class HexTranscript implements Transcript, Sendable {
+    pub let path: string;
+
+    pub func constructor(path: string) {
+        this.path = path;
+    }
+
+    pub func sent(offset: int, data: bytes): void {
+        appendText(this.path, dump_lines(SENT, offset, data).join("\n") + "\n");
+    }
+
+    pub func received(offset: int, data: bytes): void {
+        appendText(this.path, dump_lines(RECEIVED, offset, data).join("\n") + "\n");
+    }
+}
+
+## The transcript for `path` ("" for none). The file is emptied first, so a
+## run's dump holds that run only; an IoError (no such directory) goes to the
+## caller.
+pub func open_transcript(path: string): Transcript {
+    if (path.len() == 0) {
+        return NoTranscript();
+    }
+    writeText(path, "");
+    return HexTranscript(path);
+}
+
+pub class Traffic implements Sendable {
+    let transcript: Transcript;
+    let sent_bytes: Atomic[int] = Atomic.new(0);
+    let received_bytes: Atomic[int] = Atomic.new(0);
+    # 1 once the receiving side has seen the end of the peer's data.
+    let closed_by_peer: Atomic[int] = Atomic.new(0);
+    # 1 once the session stopped waiting for the receiver (-q expired): the
+    # receiving thread may still be blocked in a read, and must print
+    # nothing more when it wakes.
+    let given_up: Atomic[int] = Atomic.new(0);
+
+    pub func constructor(transcript: Transcript) {
+        this.transcript = transcript;
+    }
+
+    pub func note_sent(data: bytes): void {
+        if (data.len() == 0) {
+            return;
+        }
+        # fetchAdd returns the old count: exactly this chunk's offset.
+        let offset = this.sent_bytes.fetchAdd(data.len());
+        this.transcript.sent(offset, data);
+    }
+
+    pub func note_received(data: bytes): void {
+        if (data.len() == 0) {
+            return;
+        }
+        let offset = this.received_bytes.fetchAdd(data.len());
+        this.transcript.received(offset, data);
+    }
+
+    pub func sent(): int {
+        return this.sent_bytes.load();
+    }
+
+    pub func received(): int {
+        return this.received_bytes.load();
+    }
+
+    pub func mark_peer_closed(): void {
+        this.closed_by_peer.store(1);
+    }
+
+    pub func peer_has_closed(): bool {
+        return this.closed_by_peer.load() == 1;
+    }
+
+    pub func give_up(): void {
+        this.given_up.store(1);
+    }
+
+    pub func has_given_up(): bool {
+        return this.given_up.load() == 1;
+    }
+}

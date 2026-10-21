@@ -1,0 +1,52 @@
+@mode(host.dual)
+
+# nc's reading of the runtime's network errors. Stage0 reports a failed
+# `net.tcp` call as an IoError whose message names the call and the address
+# and ends with the system's reason:
+#
+#   tcp_connect failed on '127.0.0.1:9': Connection refused (os error 111)
+#   tcp_connect failed on 'nosuch:80': failed to lookup address information: Name or service not known
+#   tcp_bind failed on '127.0.0.1:22': Permission denied (os error 13)
+#   tcp_write failed on '<tcp_socket>': Broken pipe (os error 32)
+#
+# netcat prints only the reason ("Connection refused"), so these functions
+# cut it out.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# lib/connection.lpscr and lib/modes.lpscr import it under
+# `loup-bootstrap run --allow-net`, and tests/neterrors_test.lpscr under
+# `loup-bootstrap test`. Nothing in this project compiles it.
+
+const LOOKUP_PREFIX: string = "failed to lookup address information: ";
+
+## The system's reason in an IoError message: the text after the quoted
+## address, without the lookup prefix and the `(os error N)` suffix.
+pub func failure_reason(message: string): string {
+    var reason = message;
+    let quoted = message.lastIndexOf("': ");
+    if (quoted >= 0) {
+        reason = message.slice(quoted + 3);
+    }
+    if (reason.startsWith(LOOKUP_PREFIX)) {
+        reason = reason.slice(LOOKUP_PREFIX.len());
+    }
+    let os = reason.lastIndexOf(" (os error ");
+    if (os > 0 and reason.endsWith(")")) {
+        reason = reason.slice(0, os);
+    }
+    return reason;
+}
+
+## Whether the message is a failed name lookup (no such host), which waiting
+## and retrying will not fix.
+pub func is_lookup_failure(message: string): bool {
+    return message.contains(LOOKUP_PREFIX);
+}
+
+## Whether the message says the peer has gone away: writing after it closed
+## or reset the connection. Such errors end a direction quietly.
+pub func is_peer_gone(message: string): bool {
+    let reason = failure_reason(message);
+    return (reason == "Broken pipe" or reason == "Connection reset by peer" or
+        reason == "socket is closed");
+}

@@ -1,5 +1,6 @@
-# Build output
+# Test scratch files (traffic_test writes build/tmp/)
 /build/
 
-# Loup toolchain scratch files (partial IR from failed native builds)
+# Loup toolchain scratch files
 /.temp/
+/.loup-cache/

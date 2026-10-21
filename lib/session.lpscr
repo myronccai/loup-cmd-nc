@@ -1,0 +1,145 @@
+@mode(host.scripted)
+
+# nc's relay over one connection: receive (socket to standard output) and
+# send (the payload to the socket) at the same time, then wait for the
+# peer as -q says.
+#
+# Runtime: host.scripted. A module of the script bin/nc.lpscr, interpreted
+# with it by Stage0 (`loup-bootstrap run --allow-net`). Stage0 runs a
+# `Thread` for real: while one thread waits in a socket read or write, or
+# sleeps, the other runs.
+#
+# Structure: SessionSettings; receive(), the body of the receiving thread
+# (whole chunks, or lines with -i); send(), on the calling thread; then
+# run_session(), which starts the one, runs the other and waits.
+
+from io.streams import (BufferedReader, ByteReader, copyStream);
+from core.waiting import (waitForItSync, WaitContext);
+from core.time import (Duration);
+from system.time import (sleepNs);
+from .args import (Options, NO_TIME);
+from .connection import (Connection, SocketReader, SocketWriter, TextOutput);
+from .traffic import (Traffic, Transcript);
+from .text import (split_lines);
+from .neterrors import (failure_reason, is_peer_gone);
+
+# How much is read or written per call.
+pub const CHUNK: int = 16384;
+
+# How often the -q wait looks at the peer.
+const POLL_MS: int = 20;
+
+pub struct SessionSettings {
+    # -i: lines one at a time, this many milliseconds apart; NO_TIME for
+    # whole chunks as they come.
+    pub interval_ms: int;
+    # -q: how long to wait for the peer after sending; NO_TIME to wait as
+    # long as it takes.
+    pub quit_ms: int;
+    pub verbose: int;
+}
+
+pub func settings_from(o: Options): SessionSettings {
+    return SessionSettings(interval_ms = o.interval_ms, quit_ms = o.quit_ms, verbose = o.verbose);
+}
+
+func pause(ms: int): void {
+    if (ms > 0) {
+        sleepNs(ms * 1_000_000);
+    }
+}
+
+# The receiving thread: copy what the peer sends to standard output until it
+# closes its side. Returns the number of bytes received.
+func receive(conn: Connection, traffic: Traffic, interval_ms: int, verbose: int): int {
+    let source = SocketReader(conn, traffic);
+    try {
+        if (interval_ms == NO_TIME) {
+            let out = TextOutput(traffic);
+            copyStream(source, out, CHUNK);
+            safe { out.finish(); }
+        } else {
+            # -i: a line at a time. BufferedReader drops the line ending
+            # (LF or CR LF); println puts back an LF.
+            let lines = BufferedReader.new(source, CHUNK);
+            var reading = true;
+            while (reading) {
+                var line: Option[string] = None;
+                safe { line = lines.readLine(); }
+                match line {
+                    Some(text) => {
+                        if (traffic.has_given_up()) {
+                            reading = false;
+                        } else {
+                            println(text);
+                            pause(interval_ms);
+                        }
+                    },
+                    None => { reading = false; },
+                }
+            }
+        }
+    } catch (IoError as e) {
+        if (verbose > 0 and !traffic.has_given_up()) {
+            printErr(i"nc: read failed: {$ failure_reason(e.message) $}");
+        }
+    } finally {
+        # Whatever ended the reading, the peer will send nothing more.
+        traffic.mark_peer_closed();
+    }
+    return traffic.received();
+}
+
+# Send the payload: in one stream, or (-i) a line at a time with a pause
+# after each. A peer that has gone away ends the sending without an error:
+# what it would not take, it did not want.
+func send(conn: Connection, traffic: Traffic, payload: bytes, settings: SessionSettings): void {
+    let sink = SocketWriter(conn, traffic);
+    try {
+        if (settings.interval_ms == NO_TIME) {
+            copyStream(ByteReader(payload), sink, CHUNK);
+        } else {
+            for (line in split_lines(payload)) {
+                sink.write(line);
+                pause(settings.interval_ms);
+            }
+        }
+    } catch (IoError as e) {
+        if (!is_peer_gone(e.message)) {
+            throw e;
+        }
+        if (settings.verbose > 1) {
+            printErr(i"nc: the peer closed before all input was sent: {$ failure_reason(e.message) $}");
+        }
+    }
+}
+
+# Wait at most `quit_ms` for the peer to close. False when it did not.
+func wait_for_peer(traffic: Traffic, quit_ms: int): bool {
+    try {
+        waitForItSync(func(edits ctx: WaitContext) => traffic.peer_has_closed(),
+            "the peer to close the connection", Duration.ofMillis(0), Duration.ofMillis(POLL_MS), Duration.ofMillis(quit_ms));
+        return true;
+    } catch (TimeoutError as e) {
+        return false;
+    }
+}
+
+## Relay over `conn` and return the traffic. When -q expires first, the
+## connection is closed and the receiving thread is left behind, still
+## blocked in its read; it prints nothing more, and the process (or, with
+## -k, the next connection) carries on without it.
+pub func run_session(conn: Connection, payload: bytes, transcript: Transcript, settings: SessionSettings): Traffic {
+    let traffic = Traffic(transcript);
+    let interval = settings.interval_ms;
+    let verbose = settings.verbose;
+    let receiver = Thread.spawnWith(func(): int { return receive(conn, traffic, interval, verbose); });
+    send(conn, traffic, payload, settings);
+    if (settings.quit_ms != NO_TIME and !wait_for_peer(traffic, settings.quit_ms)) {
+        traffic.give_up();
+        conn.close();
+        return traffic;
+    }
+    receiver.join();
+    return traffic;
+}

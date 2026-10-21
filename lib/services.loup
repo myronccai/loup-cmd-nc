@@ -1,0 +1,124 @@
+@mode(host.dual)
+
+# nc's service names: the TCP entries of an /etc/services file, so that a
+# port can be given as `ssh` and reported as `[tcp/ssh]`.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# bin/nc.lpscr imports it under `loup-bootstrap run --allow-net` and
+# tests/services_test.lpscr under `loup-bootstrap test` (with the fixture
+# tests/fixtures/services). Nothing in this project compiles it.
+#
+# The file format (services(5)): one service per line, `name port/protocol
+# [alias...]`, fields separated by blanks, `#` starting a comment. Only
+# `tcp` lines count. The first name given for a port is the one reported.
+
+from io.fs import (isFile, readText);
+
+pub class ServiceTable {
+    let by_name: dict[string, int];
+    let by_port: dict[int, string];
+
+    pub func constructor(by_name: dict[string, int], by_port: dict[int, string]) {
+        this.by_name = by_name;
+        this.by_port = by_port;
+    }
+
+    pub func port_of(name: string): Option[int] {
+        return this.by_name.get(name);
+    }
+
+    pub func name_of(port: int): Option[string] {
+        return this.by_port.get(port);
+    }
+
+    pub func len(): int {
+        return this.by_name.len();
+    }
+}
+
+## The words of a line, split at runs of spaces and tabs.
+pub func fields(line: string): list[string] {
+    var out: list[string] = [];
+    var word = "";
+    for (ch in line) {
+        if (ch == " " or ch == "\t" or ch == "\r") {
+            if (word.len() > 0) {
+                out.push(word);
+                word = "";
+            }
+        } else {
+            word += ch;
+        }
+    }
+    if (word.len() > 0) {
+        out.push(word);
+    }
+    return out;
+}
+
+# A port number from 1 to 65535 written in decimal, or None.
+func port_number(text: string): Option[int] {
+    if (text.len() == 0 or text.len() > 5) {
+        return None;
+    }
+    for (ch in text) {
+        if (ch < "0" or ch > "9") {
+            return None;
+        }
+    }
+    let n = text.toInt();
+    if (n < 1 or n > 65535) {
+        return None;
+    }
+    return Some(n);
+}
+
+pub func parse_services(text: string): ServiceTable {
+    var by_name: dict[string, int] = {};
+    var by_port: dict[int, string] = {};
+    for (raw in text.split("\n")) {
+        var line = raw;
+        let hash = line.index_of("#");
+        if (hash >= 0) {
+            line = line.slice(0, hash);
+        }
+        let words = fields(line);
+        if (words.len() < 2) {
+            continue;
+        }
+        let slash = words[1].index_of("/");
+        if (slash < 0 or words[1].slice(slash + 1) != "tcp") {
+            continue;
+        }
+        let port = match port_number(words[1].slice(0, slash)) {
+            Some(n) => n,
+            None => { continue; },
+        };
+        # The name and every alias resolve; the first line for a port names it.
+        for (k in 0..words.len()) {
+            if (k == 1) {
+                continue;
+            }
+            if (!by_name.containsKey(words[k])) {
+                by_name[words[k]] = port;
+            }
+        }
+        if (!by_port.containsKey(port)) {
+            by_port[port] = words[0];
+        }
+    }
+    return ServiceTable(by_name, by_port);
+}
+
+## The table from `path`; an empty one when the file is missing or cannot be
+## read, so that numeric ports still work and names are reported as `*`.
+pub func load_services(path: string): ServiceTable {
+    if (!isFile(path)) {
+        return ServiceTable({}, {});
+    }
+    try {
+        return parse_services(readText(path));
+    } catch (IoError as e) {
+        return ServiceTable({}, {});
+    }
+}

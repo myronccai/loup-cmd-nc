@@ -1,0 +1,22 @@
+# Tasks: nc
+
+- [x] 1. Layout: `bin/nc.lpscr` over `lib/` modules, Stage0 runner with `--deny-all --allow-fs --allow-net`, `runtime.has("net")` check
+  - _Requirements: 5.7_
+- [x] 2. Option parser: clusters, attached and separate values, permuted operands, `--`, getopt wording with the `Try` hint
+  - _Requirements: 5.1, 5.2, 5.8_
+- [x] 3. Times (`-w`, `-q`, `-i`) with fractions and their messages; option combinations
+  - _Requirements: 5.4, 5.5_
+- [x] 4. Services file (`$NC_SERVICES`, `/etc/services`), ports, ranges and their messages; plans for the three modes
+  - _Requirements: 1.1, 2.1, 4.1, 5.3, 5.6_
+- [x] 5. Connections: `-n`, `-w` retries with `waitForItSync`, `ConnectError` from the runtime's `IoError`, `-v` messages
+  - _Requirements: 1.2, 1.3, 1.4, 1.5_
+- [x] 6. Sessions: receiving thread (`copyStream` over `SocketReader`, UTF-8 carry in `TextOutput`), sending with `SocketWriter`, `-q` wait
+  - _Requirements: 1.1, 3.1, 3.2, 3.5, 3.7_
+- [x] 7. `-d`, `-C`, `-i` (BufferedReader lines), `-o` hex dump, `-vv` counts
+  - _Requirements: 3.3, 3.4, 3.6, 3.8, 3.9_
+- [x] 8. Listen mode: bind errors, `Listening on`, `Connection received`, `-k`, the listener closed in `finally`
+  - _Requirements: 2.1, 2.2, 2.3, 2.4_
+- [x] 9. Scan mode: one connection per port, exit status, `-w` to wait for a port, `-i` between ports
+  - _Requirements: 4.1, 4.2, 4.3_
+- [x] 10. Unit tests for the pure modules and the traffic record; end-to-end tests nc against nc on 127.0.0.1
+  - _Requirements: all_

@@ -1,0 +1,53 @@
+@mode(host.dual)
+
+# nc's --help and --version text.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# bin/nc.lpscr imports it under `loup-bootstrap run --allow-net` and
+# tests/args_test.lpscr under `loup-bootstrap test`. Nothing in this project
+# compiles it.
+
+from .appinfo import (APP_NAME, APP_VERSION);
+
+pub func usage(): string {
+    return [
+        "usage: nc [OPTION]... DESTINATION PORT...",
+        "       nc -l [OPTION]... [ADDRESS] PORT",
+        "       nc -z [OPTION]... DESTINATION PORT[-PORT]...",
+        "Connect to DESTINATION on the first PORT that accepts and relay standard",
+        "input and output over TCP. With -l, wait for a connection instead; with",
+        "-z, only report which ports accept connections.",
+        "",
+        "  -C            send CRLF line endings (a lone LF becomes CR LF)",
+        "  -d            do not read standard input; send nothing",
+        "  -i SECONDS    send and print one line at a time, pausing SECONDS after",
+        "                each line; with -z, pause between ports",
+        "  -k            with -l: after a client leaves, wait for the next one",
+        "  -l            listen for an incoming connection",
+        "  -n            DESTINATION must be a numeric IP address (no name lookup)",
+        "  -o FILE       write a hex dump of the traffic to FILE",
+        "  -p PORT       with -l: the port to listen on",
+        "  -q SECONDS    after sending, wait at most SECONDS for the peer to close,",
+        "                then quit (0: at once; negative: wait, the default)",
+        "  -s ADDRESS    with -l: the address to listen on (default 0.0.0.0)",
+        "  -v            report connections on standard error; -vv also counts bytes",
+        "  -w SECONDS    retry a refused connection for up to SECONDS",
+        "  -z            scan: connect to each port and close, sending nothing",
+        "  -h, --help    display this help and exit",
+        "      --version output version information and exit",
+        "",
+        "PORT is a number or a service name from $NC_SERVICES or /etc/services;",
+        "with -z or several ports, also a range LOW-HIGH. SECONDS may have a",
+        "fraction (0.5). Standard input is read to its end before connecting.",
+        "",
+        "Runs under Stage0 with the network granted:",
+        "  loup-bootstrap run --allow-net bin/nc.lpscr -- [OPTION]... ARGS",
+        "",
+        "Exit status is 0 if a connection was made (with -z: if any port",
+        "accepted), and 1 if none was or on an error.",
+    ].join("\n");
+}
+
+pub func version_line(): string {
+    return i"{$ APP_NAME $} (loup-cmd-{$ APP_NAME $}) {$ APP_VERSION $}";
+}

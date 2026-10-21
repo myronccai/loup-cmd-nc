@@ -1,0 +1,78 @@
+@mode(host.dual)
+
+# nc's port operands: a number, a service name, or a range LOW-HIGH, with
+# OpenBSD netcat's messages for the bad ones.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# bin/nc.lpscr imports it (through lib/plan.loup) under
+# `loup-bootstrap run --allow-net`, and tests/ports_test.lpscr under
+# `loup-bootstrap test`. Nothing in this project compiles it.
+
+from core.string_utils import (isDigits);
+from .services import (ServiceTable);
+
+pub const MAX_PORT: int = 65535;
+
+## One port. Digits are a number (0 only when `allow_zero`, which listening
+## uses to ask for a free port); anything else is looked up as a service.
+pub func parse_port(text: string, services: ServiceTable, allow_zero: bool): Result[int, string] {
+    if (text.len() == 0) {
+        return Err("port number invalid: ");
+    }
+    if (isDigits(text)) {
+        # More than five digits cannot be a port, and would not fit an int
+        # if there were enough of them.
+        if (text.len() > 5) {
+            return Err(i"port number too large: {$ text $}");
+        }
+        return match text.toInt() {
+            0 if (!allow_zero) => Err(i"port number too small: {$ text $}"),
+            n if (n > MAX_PORT) => Err(i"port number too large: {$ text $}"),
+            n => Ok(n),
+        };
+    }
+    return match services.port_of(text) {
+        Some(port) => Ok(port),
+        None => Err(i"port number invalid: {$ text $}"),
+    };
+}
+
+## The ports of one operand, in increasing order for a range. A name that
+## is itself a service (`kerberos-adm`) is not split at its dash.
+pub func parse_port_range(text: string, services: ServiceTable): Result[list[int], string] {
+    let dash = text.index_of("-");
+    if (dash <= 0 or services.port_of(text).is_some()) {
+        let port = parse_port(text, services, false)?;
+        return Ok([port]);
+    }
+    var low = parse_port(text.slice(0, dash), services, false)?;
+    var high = parse_port(text.slice(dash + 1), services, false)?;
+    if (low > high) {
+        let swap = low;
+        low = high;
+        high = swap;
+    }
+    var ports: list[int] = [];
+    for (p in low..(high + 1)) {
+        ports.push(p);
+    }
+    return Ok(ports);
+}
+
+## Every port of the operands, in the order given (duplicates kept: asking
+## twice is asking twice).
+pub func parse_port_list(operands: list[string], services: ServiceTable): Result[list[int], string] {
+    var all: list[int] = [];
+    for (operand in operands) {
+        let ports = parse_port_range(operand, services)?;
+        for (p in ports) {
+            all.push(p);
+        }
+    }
+    return Ok(all);
+}
+
+## How a port is shown in `[tcp/NAME]`: its service name, or `*`.
+pub func service_label(port: int, services: ServiceTable): string {
+    return services.name_of(port) ?? "*";
+}

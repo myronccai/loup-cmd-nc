@@ -1,0 +1,64 @@
+@mode(host.scripted)
+
+# Unit tests for nc's services table (lib/services.loup): names, aliases,
+# the first name of a port, udp-only and malformed lines, and a missing
+# file.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/services_test.lpscr`), one test per `func test_*()`. It reads
+# tests/fixtures/services and imports lib/ by relative path; it is not part
+# of the program.
+
+from debug.assert import (expect, expectEq);
+from io.fs import (readText);
+from ..lib.services import (ServiceTable, fields, parse_services, load_services);
+
+const FIXTURE: string = "tests/fixtures/services";
+
+func table(): ServiceTable {
+    return parse_services(readText(FIXTURE));
+}
+
+func test_fields(): void {
+    expectEq(fields("ssh\t\t22/tcp   # c").join("|"), "ssh|22/tcp|#|c", "tabs and spaces");
+    expectEq(fields("  lead and trail  ").join("|"), "lead|and|trail", "edges");
+    expectEq(fields("crlf 1/tcp\r").join("|"), "crlf|1/tcp", "carriage return");
+    expectEq(fields("").len(), 0, "empty line");
+}
+
+func test_names(): void {
+    let t = table();
+    expectEq(t.port_of("ssh").unwrap(), 22, "ssh");
+    expectEq(t.port_of("http").unwrap(), 80, "http");
+    expectEq(t.port_of("www").unwrap(), 80, "alias");
+    expectEq(t.port_of("mail").unwrap(), 25, "smtp alias");
+    expectEq(t.port_of("kerberos-adm").unwrap(), 749, "a name with a dash");
+    expectEq(t.port_of("webcache").unwrap(), 8080, "alias after a tab");
+}
+
+func test_ports_named_once(): void {
+    let t = table();
+    expectEq(t.name_of(80).unwrap(), "http", "first name wins");
+    expectEq(t.port_of("www-alt").unwrap(), 80, "a second name still resolves");
+    expectEq(t.name_of(53).unwrap(), "domain", "tcp line of a tcp/udp pair");
+    expect(t.name_of(514).is_none(), "udp only");
+    expect(t.port_of("syslog").is_none(), "udp name");
+}
+
+func test_malformed_lines(): void {
+    let t = table();
+    expect(t.port_of("broken").is_none(), "port too large");
+    expect(t.port_of("noport").is_none(), "no port");
+    expect(t.port_of("nosuch").is_none(), "not a number");
+    expect(t.port_of("lonely").is_none(), "one field");
+    expect(t.port_of("#").is_none(), "comment");
+    expectEq(t.len(), 11, "names in the fixture");
+}
+
+func test_missing_file(): void {
+    let t = load_services("tests/fixtures/no-such-services-file");
+    expectEq(t.len(), 0, "empty table");
+    expect(t.name_of(22).is_none(), "nothing named");
+    expectEq(load_services(FIXTURE).port_of("ssh").unwrap(), 22, "loads a file");
+}

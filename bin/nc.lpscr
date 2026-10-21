@@ -1,0 +1,92 @@
+#!/usr/bin/env -S loup-bootstrap run --deny-all --allow-fs --allow-net
+@mode(host.scripted)
+
+# nc: netcat for TCP. Connect to a port and relay standard input and
+# output over the connection, wait for a connection (-l), or check which
+# ports accept connections (-z).
+#
+# Runtime: host.scripted. Stage0 interprets this file from source with
+# `loup-bootstrap run --deny-all --allow-fs --allow-net bin/nc.lpscr --
+# ARGS`: the shebang line, `make run`, tests/e2e.sh and the CI smoke test
+# all run it that way. Its top-level statements run in order and there is
+# no compile step. The flags grant the `fs` capability (standard input,
+# the services file, -o) and `net`, and nothing else; Stage0 enforces them.
+# The self-hosted `loup run` cannot run it on Linux x86-64: it has no
+# `net.tcp`.
+#
+# Structure: parse the command line (a usage error exits 1, as in OpenBSD
+# netcat), answer --help and --version, check that the network is granted,
+# load the service names, work out the plan (mode, host, ports), read
+# standard input once, open the -o transcript, then run the mode and exit
+# with its status.
+
+from ..lib.appinfo import (APP_NAME, EXIT_OK, EXIT_FAILURE, DEFAULT_SERVICES, SERVICES_ENV);
+from ..lib.args import (Options, ArgError, parse_args);
+from ..lib.usage import (usage, version_line);
+from ..lib.services import (load_services);
+from ..lib.plan import (Plan, Mode, make_plan);
+from ..lib.text import (to_crlf);
+from ..lib.traffic import (Transcript, open_transcript);
+from ..lib.neterrors import (failure_reason);
+from ..lib.modes import (Reporter, connect_mode, listen_mode, scan_ports);
+
+func usage_error(e: ArgError): void {
+    printErr(i"{$ APP_NAME $}: {$ e.message $}");
+    if (e.hint) {
+        printErr(i"Try '{$ APP_NAME $} --help' for more information.");
+    }
+    exit(EXIT_FAILURE);
+}
+
+let parsed = parse_args(args());
+if (parsed.is_err()) {
+    usage_error(parsed.unwrap_err());
+}
+let opts: Options = parsed.unwrap();
+if (opts.help) {
+    println(usage());
+    exit(EXIT_OK);
+}
+if (opts.version) {
+    println(version_line());
+    exit(EXIT_OK);
+}
+
+# Without the grant every socket call would throw; say what to do instead.
+if (!runtime.has("net")) {
+    printErr(i"{$ APP_NAME $}: network access is not granted: run nc with `loup-bootstrap run --allow-net`");
+    exit(EXIT_FAILURE);
+}
+
+let services = load_services(env(SERVICES_ENV) ?? DEFAULT_SERVICES);
+let planned = make_plan(opts, services);
+if (planned.is_err()) {
+    usage_error(planned.unwrap_err());
+}
+let plan: Plan = planned.unwrap();
+
+# Standard input is read to its end now, once: 1.26.0 has no way to read it
+# a piece at a time. A scan sends nothing, and -d says not to read it.
+var payload = b"";
+if (plan.mode != Mode.Scan and !opts.no_stdin) {
+    payload = readBytes("/dev/stdin");
+    if (opts.crlf) {
+        payload = to_crlf(payload);
+    }
+}
+
+var transcript: Option[Transcript] = None;
+try {
+    transcript = Some(open_transcript(opts.dump_file));
+} catch (IoError as e) {
+    printErr(i"{$ APP_NAME $}: {$ opts.dump_file $}: {$ failure_reason(e.message) $}");
+    exit(EXIT_FAILURE);
+}
+
+let report = Reporter(opts.verbose, opts.numeric, services);
+let status = match plan.mode {
+    Mode.Scan => scan_ports(plan, opts, report),
+    Mode.Listen => listen_mode(plan, opts, payload, transcript.unwrap(), report),
+    Mode.Connect => connect_mode(plan, opts, payload, transcript.unwrap(), report),
+};
+exit(status);

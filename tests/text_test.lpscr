@@ -1,0 +1,71 @@
+@mode(host.scripted)
+
+# Unit tests for nc's byte helpers (lib/text.loup): CRLF for -C, lines for
+# -i, and the UTF-8 cut points that keep a character from being split
+# between two printed chunks.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/text_test.lpscr`), one test per `func test_*()`. It imports lib/ by
+# relative path; it is not part of the program.
+
+from debug.assert import (expect, expectEq);
+from ..lib.text import (to_crlf, split_lines, sequence_length, utf8_complete, concat);
+
+func codes(b: bytes): string {
+    return b.toList().join(" ");
+}
+
+func test_crlf(): void {
+    expectEq(to_crlf(b"a\nb\n").decode(), "a\r\nb\r\n", "every LF");
+    expectEq(to_crlf(b"a\r\nb").decode(), "a\r\nb", "an existing CR LF stays");
+    expectEq(to_crlf(b"\n\n").decode(), "\r\n\r\n", "empty lines");
+    expectEq(to_crlf(b"no newline").decode(), "no newline", "none");
+    expectEq(to_crlf(b"").len(), 0, "empty");
+    expectEq(to_crlf(b"a\rb").decode(), "a\rb", "a lone CR is left alone");
+}
+
+func test_split_lines(): void {
+    let parts = split_lines(b"one\ntwo\r\nthree");
+    expectEq(parts.len(), 3, "three pieces");
+    expectEq(parts[0].decode(), "one\n", "first keeps its LF");
+    expectEq(parts[1].decode(), "two\r\n", "CR LF kept");
+    expectEq(parts[2].decode(), "three", "unterminated last");
+    expectEq(split_lines(b"a\n").len(), 1, "no empty piece after the last LF");
+    expectEq(split_lines(b"").len(), 0, "nothing");
+    expectEq(split_lines(b"\n\n").len(), 2, "empty lines");
+}
+
+func test_sequence_length(): void {
+    expectEq(sequence_length(0x41), 1, "ASCII");
+    expectEq(sequence_length(0xC3), 2, "two bytes");
+    expectEq(sequence_length(0xE6), 3, "three bytes");
+    expectEq(sequence_length(0xF0), 4, "four bytes");
+    expectEq(sequence_length(0x80), 0, "continuation");
+    expectEq(sequence_length(0xFF), 0, "never valid");
+}
+
+func test_utf8_complete(): void {
+    # "é" is C3 A9, "日" is E6 97 A5, "😀" is F0 9F 98 80.
+    expectEq(utf8_complete(b"abc"), 3, "ASCII");
+    expectEq(utf8_complete(bytesFromInts([0x61, 0xC3, 0xA9])), 3, "whole é");
+    expectEq(utf8_complete(bytesFromInts([0x61, 0xC3])), 1, "é cut after its lead");
+    expectEq(utf8_complete(bytesFromInts([0xE6, 0x97])), 0, "日 missing a byte");
+    expectEq(utf8_complete(bytesFromInts([0x61, 0xE6, 0x97, 0xA5])), 4, "whole 日");
+    expectEq(utf8_complete(bytesFromInts([0xF0, 0x9F, 0x98])), 0, "emoji missing a byte");
+    expectEq(utf8_complete(bytesFromInts([0xF0, 0x9F, 0x98, 0x80])), 4, "whole emoji");
+    expectEq(utf8_complete(b""), 0, "empty");
+}
+
+func test_utf8_complete_invalid(): void {
+    # Bytes that can never become a character are printed, not held back.
+    expectEq(utf8_complete(bytesFromInts([0x61, 0xFF])), 2, "0xFF");
+    expectEq(utf8_complete(bytesFromInts([0x80, 0x80, 0x80, 0x80])), 4, "only continuation bytes");
+    expectEq(utf8_complete(bytesFromInts([0x61, 0xC3, 0xA9, 0xA9])), 4, "a stray continuation byte");
+}
+
+func test_concat(): void {
+    expectEq(codes(concat(b"ab", b"c")), "97 98 99", "two pieces");
+    expectEq(codes(concat(b"", b"x")), "120", "empty first");
+    expectEq(concat(bytesFromInts([0xC3]), bytesFromInts([0xA9])).decode(), "é", "a character put back together");
+}

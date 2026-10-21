@@ -1,0 +1,90 @@
+@mode(host.dual)
+
+# What nc is asked to do, from its options and operands: connect to a
+# destination, listen on an address, or scan ports; and which ports.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# bin/nc.lpscr imports it under `loup-bootstrap run --allow-net` and
+# tests/plan_test.lpscr under `loup-bootstrap test`. Nothing in this project
+# compiles it.
+
+from .args import (Options, ArgError);
+from .ports import (parse_port, parse_port_list);
+from .services import (ServiceTable);
+
+pub enum Mode {
+    Connect,
+    Listen,
+    Scan,
+}
+
+pub const ANY_ADDRESS: string = "0.0.0.0";
+
+pub struct Plan {
+    pub mode: Mode;
+    # The destination, or the address to listen on.
+    pub host: string;
+    # Connect and scan: the ports in the order to try them. Listen: one.
+    pub ports: list[int];
+}
+
+pub func mode_name(mode: Mode): string {
+    return match mode {
+        Mode.Connect => "connect",
+        Mode.Listen => "listen",
+        Mode.Scan => "scan",
+    };
+}
+
+func usage_error(message: string): ArgError {
+    return ArgError(message = message, hint = true);
+}
+
+func value_error(message: string): ArgError {
+    return ArgError(message = message, hint = false);
+}
+
+# Listen mode takes `[ADDRESS] PORT`, where -s stands for ADDRESS and -p for
+# PORT; each may be given only once.
+func listen_plan(o: Options, services: ServiceTable): Result[Plan, ArgError] {
+    var rest = o.operands;
+    var port_text = o.local_port;
+    if (port_text.len() == 0) {
+        if (rest.len() == 0) {
+            return Err(value_error("missing port number"));
+        }
+        port_text = rest.pop();
+    }
+    var address = o.source_address;
+    if (address.len() == 0 and rest.len() > 0) {
+        address = rest[0];
+        rest = rest.slice(1);
+    }
+    if (rest.len() > 0) {
+        return Err(usage_error(i"extra operand '{$ rest[0] $}'"));
+    }
+    if (address.len() == 0) {
+        address = ANY_ADDRESS;
+    }
+    return match parse_port(port_text, services, true) {
+        Ok(port) => Ok(Plan(mode = Mode.Listen, host = address, ports = [port])),
+        Err(message) => Err(value_error(message)),
+    };
+}
+
+pub func make_plan(o: Options, services: ServiceTable): Result[Plan, ArgError] {
+    if (o.listen) {
+        return listen_plan(o, services);
+    }
+    if (o.operands.len() == 0) {
+        return Err(usage_error("missing destination and port"));
+    }
+    if (o.operands.len() == 1) {
+        return Err(value_error("missing port number"));
+    }
+    let mode = if (o.scan) { Mode.Scan } else { Mode.Connect };
+    return match parse_port_list(o.operands.slice(1), services) {
+        Ok(ports) => Ok(Plan(mode = mode, host = o.operands[0], ports = ports)),
+        Err(message) => Err(value_error(message)),
+    };
+}

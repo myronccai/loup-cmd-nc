@@ -1,0 +1,238 @@
+@mode(host.dual)
+
+# nc's command-line parser, written by hand in the style of getopt(3).
+#
+# Grammar: nc [-Cdhklnvz] [-i SECONDS] [-o FILE] [-p PORT] [-q SECONDS]
+#             [-s ADDRESS] [-w SECONDS] [DESTINATION] [PORT]...
+# Short options cluster (`-lvk`); a value is attached (`-w5`) or the next
+# word (`-w 5`). Operands may come before options, as with glibc's getopt;
+# `--` ends the options. The long options are --help and --version.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# bin/nc.lpscr imports it under `loup-bootstrap run --allow-net` and
+# tests/args_test.lpscr under `loup-bootstrap test`. Nothing in this project
+# compiles it.
+#
+# Structure: parse_args() makes one pass over the words, handing each option
+# letter to set_flag() or set_value(); check_combination() then refuses
+# options that do not go together. Times are checked as they are read, by
+# parse_seconds(), with OpenBSD netcat's messages ("timeout invalid: X").
+
+from core.string_utils import (isDigits);
+
+# Letters that take a value, and letters that are plain flags.
+const VALUE_LETTERS: string = "iopqsw";
+const FLAG_LETTERS: string = "Cdhklnvz";
+
+# A time that was not given.
+pub const NO_TIME: int = -1;
+
+pub struct Options {
+    pub var help: bool;
+    pub var version: bool;
+    pub var listen: bool;
+    pub var keep_listening: bool;
+    pub var scan: bool;
+    pub var verbose: int;
+    pub var numeric: bool;
+    pub var no_stdin: bool;
+    pub var crlf: bool;
+    # Milliseconds, or NO_TIME. A negative -q is stored as NO_TIME too: both
+    # mean "wait for the peer as long as it takes".
+    pub var interval_ms: int;
+    pub var quit_ms: int;
+    pub var wait_ms: int;
+    pub var dump_file: string;
+    pub var local_port: string;
+    pub var source_address: string;
+    pub var operands: list[string];
+}
+
+## A usage error. `hint` says whether to add the "Try 'nc --help'" line:
+## getopt errors get it, bad values do not (as in OpenBSD netcat).
+pub struct ArgError {
+    pub message: string;
+    pub hint: bool;
+}
+
+pub func default_options(): Options {
+    return Options(
+        help = false, version = false, listen = false, keep_listening = false,
+        scan = false, verbose = 0, numeric = false, no_stdin = false,
+        crlf = false, interval_ms = NO_TIME, quit_ms = NO_TIME,
+        wait_ms = NO_TIME, dump_file = "", local_port = "",
+        source_address = "", operands = [],
+    );
+}
+
+func hinted(message: string): ArgError {
+    return ArgError(message = message, hint = true);
+}
+
+func plain(message: string): ArgError {
+    return ArgError(message = message, hint = false);
+}
+
+## Seconds as milliseconds: "5", "0.5", "1.25" (digits after the third
+## decimal are dropped). With `allow_negative`, any negative value is
+## NO_TIME. The error is the text itself, for the caller's message.
+pub func parse_seconds(text: string, allow_negative: bool): Result[int, string] {
+    var digits = text;
+    var negative = false;
+    if (allow_negative and digits.startsWith("-")) {
+        negative = true;
+        digits = digits.slice(1);
+    }
+    var whole = digits;
+    var fraction = "";
+    let dot = digits.index_of(".");
+    if (dot >= 0) {
+        whole = digits.slice(0, dot);
+        fraction = digits.slice(dot + 1);
+    }
+    # "5." and ".5" are fine, "." is not; nine digits of seconds (about
+    # 31 years) is plenty and keeps the arithmetic far from overflow.
+    if (whole.len() + fraction.len() == 0 or whole.len() > 9) {
+        return Err(text);
+    }
+    if ((whole.len() > 0 and !isDigits(whole)) or (fraction.len() > 0 and !isDigits(fraction))) {
+        return Err(text);
+    }
+    if (negative) {
+        return Ok(NO_TIME);
+    }
+    let millis = (fraction + "000").slice(0, 3);
+    let seconds = if (whole.len() > 0) { whole.toInt() } else { 0 };
+    return Ok(seconds * 1000 + millis.toInt());
+}
+
+func set_flag(edits o: Options, letter: string): void {
+    match letter {
+        "C" => { o.crlf = true; },
+        "d" => { o.no_stdin = true; },
+        "h" => { o.help = true; },
+        "k" => { o.keep_listening = true; },
+        "l" => { o.listen = true; },
+        "n" => { o.numeric = true; },
+        "v" => { o.verbose += 1; },
+        "z" => { o.scan = true; },
+        _ => {},
+    }
+}
+
+# Store the value of a value option; the result is the error message, if
+# the value is bad.
+func set_value(edits o: Options, letter: string, value: string): Option[string] {
+    match letter {
+        "i" => {
+            match parse_seconds(value, false) {
+                Ok(ms) => { o.interval_ms = ms; },
+                Err(bad) => { return Some(i"interval invalid: {$ bad $}"); },
+            }
+        },
+        "q" => {
+            match parse_seconds(value, true) {
+                Ok(ms) => { o.quit_ms = ms; },
+                Err(bad) => { return Some(i"quit timer invalid: {$ bad $}"); },
+            }
+        },
+        "w" => {
+            match parse_seconds(value, false) {
+                Ok(ms) => { o.wait_ms = ms; },
+                Err(bad) => { return Some(i"timeout invalid: {$ bad $}"); },
+            }
+        },
+        "o" => {
+            if (value.len() == 0) {
+                return Some("-o needs a file name");
+            }
+            o.dump_file = value;
+        },
+        "p" => { o.local_port = value; },
+        "s" => { o.source_address = value; },
+        _ => {},
+    }
+    return None;
+}
+
+## Options that cannot be used together, in OpenBSD netcat's order and words
+## where it has them. `-p` and `-s` choose the local end of a connection in
+## OpenBSD; net.tcp cannot, so here they belong to -l only.
+pub func check_combination(o: Options): Option[string] {
+    if (o.keep_listening and !o.listen) {
+        return Some("must use -l with -k");
+    }
+    if (o.scan and o.listen) {
+        return Some("cannot use -z and -l");
+    }
+    if (!o.listen and o.local_port.len() > 0) {
+        return Some("-p needs -l: the local port of a connection cannot be chosen");
+    }
+    if (!o.listen and o.source_address.len() > 0) {
+        return Some("-s needs -l: the local address of a connection cannot be chosen");
+    }
+    return None;
+}
+
+pub func parse_args(argv: list[string]): Result[Options, ArgError] {
+    var o = default_options();
+    var next = 0;
+    var operands_only = false;
+    while (next < argv.len()) {
+        let word = argv[next];
+        next += 1;
+        if (operands_only or word == "-" or !word.startsWith("-")) {
+            o.operands.push(word);
+            continue;
+        }
+        if (word == "--") {
+            operands_only = true;
+            continue;
+        }
+        if (word.startsWith("--")) {
+            if (word == "--help") {
+                o.help = true;
+            } else if (word == "--version") {
+                o.version = true;
+            } else {
+                return Err(hinted(i"unrecognized option '{$ word $}'"));
+            }
+            continue;
+        }
+
+        # A cluster of short options. A value option ends the cluster: the
+        # rest of the word, or else the next word, is its value.
+        var at = 1;
+        while (at < word.len()) {
+            let letter = word.slice(at, at + 1);
+            at += 1;
+            if (VALUE_LETTERS.contains(letter)) {
+                var value = word.slice(at);
+                if (value.len() == 0) {
+                    if (next >= argv.len()) {
+                        return Err(hinted(i"option requires an argument -- '{$ letter $}'"));
+                    }
+                    value = argv[next];
+                    next += 1;
+                }
+                match set_value(edits: o, letter, value) {
+                    Some(message) => { return Err(plain(message)); },
+                    None => {},
+                }
+                break;
+            }
+            if (!FLAG_LETTERS.contains(letter)) {
+                return Err(hinted(i"invalid option -- '{$ letter $}'"));
+            }
+            set_flag(edits: o, letter);
+        }
+    }
+
+    if (!o.help and !o.version) {
+        match check_combination(o) {
+            Some(message) => { return Err(plain(message)); },
+            None => {},
+        }
+    }
+    return Ok(o);
+}

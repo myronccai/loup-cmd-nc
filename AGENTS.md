@@ -1,7 +1,12 @@
 # AGENTS.md
 
-This repository is a GitHub template for building a command-line application
-in the Loup programming language. The program is built as a native executable.
+This repository is `nc`, netcat for TCP written in the Loup programming
+language on the standard library's `net.tcp`, part of the loup-cmd series of
+example applications. It recreates OpenBSD netcat's connect (`nc HOST
+PORT`), listen (`-l`, `-k`) and scan (`-z`) modes. It is a `host.scripted`
+program: the `.lpscr` script in `bin/`, run from source by
+`loup-bootstrap run` with the `fs` and `net` capabilities, imports
+`.lpscr` and `host.dual` modules from `lib/`. Nothing is compiled.
 
 ## Skills
 
@@ -19,93 +24,115 @@ mistakes. Load those only as needed.
 
 ```text
 .
-├── package.lppkg                # Loup manifest: name, version, toolchain, [build] entry, [test] pattern
-├── Makefile                     # run, check, test, build, ci, clean
-├── LICENSE                      # MIT license (copyright Code Craft AI LLC)
-├── source/                      # all Loup code; modules import each other by path from here
-│   ├── main.loup                # entry point: func main() calls run(runtime.args())
-│   ├── appinfo.loup             # APP_NAME, APP_VERSION, APP_SUMMARY, exit statuses
-│   ├── cli/
-│   │   ├── args.loup            # struct Options, parse_args()
-│   │   ├── usage.loup           # usage(), version_line()
-│   │   └── app.loup             # run(), dispatch(): routes commands, maps errors to exit statuses
-│   └── commands/                # one module per command
-│       └── hello.loup           # sample command: run_hello()
-├── tests/                       # tests: <module>_test.loup files with func test_*(): void
-│   ├── app_test.loup
-│   ├── args_test.loup
-│   └── hello_test.loup
-├── specs/                       # feature specs: <feature>/requirements.md, design.md, tasks.md
-│   ├── README.md
-│   └── command-line-interface/
+├── package.lppkg                # manifest: name, version, toolchain, [build] entry (bin/nc.lpscr), [test] pattern
+├── Makefile                     # run, check, test, e2e, ci, clean
+├── bin/
+│   └── nc.lpscr                 # entry script (host.scripted, executable): options, grant check, plan, stdin, mode
+├── lib/
+│   ├── appinfo.loup             # APP_NAME, APP_VERSION, exit statuses, DEFAULT_SERVICES, SERVICES_ENV
+│   ├── args.loup                # struct Options, ArgError, parse_args(), parse_seconds(), check_combination()
+│   ├── usage.loup               # usage(), version_line()
+│   ├── services.loup            # class ServiceTable, fields(), parse_services(), load_services()
+│   ├── ports.loup               # parse_port(), parse_port_range(), parse_port_list(), service_label()
+│   ├── plan.loup                # enum Mode, struct Plan, make_plan(), mode_name()
+│   ├── text.loup                # to_crlf(), split_lines(), utf8_complete(), sequence_length(), concat()
+│   ├── hexdump.loup             # hex(), shown(), dump_lines(): the -o format
+│   ├── neterrors.loup           # failure_reason(), is_lookup_failure(), is_peer_gone()
+│   ├── traffic.lpscr            # interface Transcript, NoTranscript, HexTranscript, open_transcript(), class Traffic
+│   ├── connection.lpscr         # NcError, ConnectError, ListenError, Connection, open_connection(), open_listener(), SocketReader, SocketWriter, TextOutput
+│   ├── session.lpscr            # SessionSettings, settings_from(), run_session(): the receiving thread, sending, -q
+│   └── modes.lpscr              # Reporter (-v messages), connect_mode(), scan_ports(), listen_mode()
+├── tests/
+│   ├── *_test.lpscr             # unit tests: func test_*(): void (no sockets)
+│   ├── e2e.sh                   # end-to-end: nc against nc on 127.0.0.1, command-line errors
+│   └── fixtures/services        # a services(5) file for the unit tests
+├── specs/nc/                    # requirements.md, design.md, tasks.md
 ├── skills/loup-programmer/      # the Loup skill and its references
-├── .github/workflows/ci.yml     # installs Loup and runs `make ci`
-└── build/                       # build output (git-ignored)
+└── .github/workflows/ci.yml     # installs Loup and runs `make ci`
 ```
 
-## Build, run and test
+## Check, run and test
 
-Prerequisites: Loup 1.26.0 (`loup` and `loup-bootstrap` on `PATH`), `make`,
-and `clang` 17 or later for native builds.
+Prerequisites: Loup 1.26.0 (`loup-bootstrap` on `PATH`), `make`, `bash` and
+`python3` (the end-to-end tests use it to find free ports).
 
 Loup Lite comes from <https://github.com/code-craft-ai-company/loup-releases>;
 [README.md](README.md#installing-loup-lite) has the install commands.
 
 | Task | Command | Notes |
 |------|---------|-------|
-| Run from source | `make run ARGS="hello Ann --shout"` | `loup run source/main.loup -- ARGS` |
-| Type-check | `make check` | checks `source/main.loup` and every module it imports; tests are not checked |
-| Run all tests | `make test` | every `tests/*_test.loup` |
-| Run matching tests | `make test TEST_ARGS="--filter value"` | tests whose name contains `value` |
-| Run one test file | `make test TEST_ARGS="--file tests/args_test.loup"` | |
-| Build | `make build` | native binary at `build/myapp` |
-| Run the binary | `build/myapp --help` | |
-| Everything CI runs | `make ci` | check, test, build, then `build/myapp --version` |
-| Clean | `make clean` | removes `build/` and `.temp/` |
+| Run | `make run ARGS="-zv 127.0.0.1 20-25"` | `loup-bootstrap run --deny-all --allow-fs --allow-net bin/nc.lpscr -- ARGS` |
+| Run directly | `./bin/nc.lpscr -zv 127.0.0.1 22` | the shebang grants the capabilities; long options only after `--` |
+| Type-check | `make check` | `loup-bootstrap check FILE` for each `bin/*.lpscr` and its imports |
+| Unit tests | `make test` | each `tests/*_test.lpscr` in turn, `--no-parallel` |
+| One test file | `make test TESTS=tests/args_test.lpscr` | |
+| Matching tests | `make test TEST_ARGS="--filter values"` | |
+| End-to-end tests | `make e2e` | `tests/e2e.sh`: listeners on free ports, always killed |
+| Everything CI runs | `make ci` | check, test, e2e, then `--version` |
+| Clean | `make clean` | removes `build/` (test scratch files), `.temp/`, `.loup-cache/` |
 
-Run `make ci` before reporting a change as done. `loup run` and the native
-build do not support the same things, so a change can pass `make test` and
-still fail `make build`.
+Run `make ci` before reporting a change as done.
 
-Do not call `loup test` or `loup check` directly on Linux x86-64. There `loup`
-is the self-hosted driver: it refuses `check`, and its test runner cannot
-resolve this project's imports. The Makefile uses `loup-bootstrap` (Stage0) for
-both, and sets `LOUPPATH=source` for tests.
+Toolchain facts this project depends on (Loup 1.26.0, Linux x86-64):
+
+- `net.tcp` works only under Stage0 (`loup-bootstrap run`), and only with
+  `--allow-net`; the self-hosted `loup run` has none. `runtime.has("net")`
+  tells the program whether it was granted. The test runner
+  (`loup-bootstrap test`) grants no network, so socket tests live in
+  `tests/e2e.sh`.
+- Stage0 runs a `Thread` for real, with a global lock that a thread gives up
+  while it waits in a socket read, write or accept, in `sleepNs`, or in
+  `join`. Reading a file (`readBytes("/dev/stdin")`) keeps the lock: that is
+  why standard input is read before the session starts.
+- Values captured by a `Thread.spawnWith` lambda must be `Sendable`; a class
+  is `Sendable` when it says so and every field that changes is an `Atomic`
+  (`Mutex`, `RwLock`). `Connection`, `Traffic` and the transcripts are.
+- `TcpSocket.close()` throws when called twice (hence `Connection`'s atomic
+  guard), `write()` may write only part of the data, and `read()` returns
+  empty bytes once the peer has closed. A read clones the socket while it
+  waits, so closing the socket from another thread takes effect only when
+  that read returns.
+- `TcpSocket` is not accepted where `io.streams` wants a `Readable` or
+  `Writable`: wrap it (`SocketReader`, `SocketWriter`).
+- `Closeable.close()` cannot be a `modifier` method: `with` calls it
+  outside a `safe` context.
+- Network errors are `IoError`s whose message ends with the system's reason
+  (`... Connection refused (os error 111)`); `lib/neterrors.loup` reads it.
+- `print` writes UTF-8 text and flushes at once; `writeBytes("/dev/stdout")`
+  reopens and truncates a redirected file, so received data is printed as
+  text.
+- `loup-bootstrap test` with all files at once fails random tests with an
+  empty `RuntimeError` on a busy machine; the Makefile runs one file at a
+  time with `--no-parallel`.
+- `attempt` is a reserved word (`attempt { }` blocks): do not name a
+  function after it.
 
 ## Making a change
 
-1. Write or update the spec in `specs/<feature>/` (see [specs/README.md](specs/README.md)).
-2. Change the code under `source/`.
-3. Add or update tests in `tests/`.
+1. Update the spec in `specs/nc/` (see [specs/README.md](specs/README.md)).
+2. Change the code: parsing and plans in the `host.dual` modules, sockets
+   and threads in the `.lpscr` modules, start-up in `bin/nc.lpscr`.
+3. Add or update unit tests in `tests/` and cases in `tests/e2e.sh`.
 4. Run `make ci`.
-5. Tick the finished tasks in `specs/<feature>/tasks.md`.
-
-To add a command:
-
-1. Create `source/commands/<name>.loup` with `@mode(host.dual)` and
-   `pub func run_<name>(opts: Options): int`, returning an exit status from
-   `appinfo`.
-2. Add an arm for it to `dispatch` in `source/cli/app.loup`.
-3. Describe it in `usage()` in `source/cli/usage.loup`.
-4. Add any new options to `Options` and `parse_args` in `source/cli/args.loup`.
-5. Add `tests/<name>_test.loup`.
+5. Tick the finished tasks in `specs/nc/tasks.md`.
 
 ## Conventions
 
-- Every source file is `@mode(host.dual)` with the `.loup` extension. Only
-  `source/main.loup` has a `main()`.
-- Modules import each other by path from `source/`:
-  `from cli.args import (Options);`. Tests import them the same way. Do not
-  use relative imports (`from .args import ...`): the self-hosted `loup run`
-  on Linux x86-64 fails on them.
-- Struct fields read from another module must be `pub`.
-- The native build supports less than `loup run` does. For example,
-  `list.is_empty()` fails native codegen (`E-CODEGEN-UNHANDLED-METHOD`); use
-  `len() == 0`.
-- Keep `APP_VERSION` in `source/appinfo.loup` equal to `version` in
-  `package.lppkg`.
-- The skill's examples use the `loup init` layout (`src/`, `tests/`, and
-  `from ..src.x import` in tests). This project uses `source/` and
-  `tests/` with plain imports; follow this file.
-- The skill documents toolchain 1.25.1; this template targets 1.26.0. When
+- `bin/nc.lpscr` is `@mode(host.scripted)` with the shebang
+  `#!/usr/bin/env -S loup-bootstrap run --deny-all --allow-fs --allow-net`
+  and the executable bit. Grant no more capabilities than it uses.
+- `lib/*.loup` are `@mode(host.dual)` and touch no socket; `lib/*.lpscr`
+  are `@mode(host.scripted)` and hold everything that uses `net.tcp` or
+  threads.
+- Imports are relative: `from ..lib.args import (...)` in `bin/` and
+  `tests/`, `from .ports import (...)` inside `lib/`.
+- Messages follow OpenBSD netcat: `nc: ...` on standard error, `-v` lines
+  without the prefix (`Connection to HOST PORT port [tcp/*] succeeded!`).
+- Only `bin/nc.lpscr`, `lib/modes.lpscr` and the receiving side of
+  `lib/session.lpscr` print.
+- The end-to-end tests never leave 127.0.0.1 and set `NC_SERVICES` to a
+  file of their own.
+- Keep `APP_VERSION` in `lib/appinfo.loup` and `version` in `package.lppkg`
+  in step.
+- The skill documents toolchain 1.25.1; this project targets 1.26.0. When
   they disagree, trust the toolchain's behaviour.

@@ -1,0 +1,95 @@
+@mode(host.dual)
+
+# nc's byte helpers: CRLF line endings for -C, lines for -i, and where a
+# received chunk can be printed without cutting a UTF-8 character in two.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# lib/session.lpscr and lib/connection.lpscr import it under
+# `loup-bootstrap run --allow-net`, and tests/text_test.lpscr under
+# `loup-bootstrap test`. Nothing in this project compiles it.
+
+const LF: int = 10;
+const CR: int = 13;
+
+## `data` with every line feed that is not already preceded by a carriage
+## return turned into CR LF, so that `-C` does not double an existing CR LF.
+pub func to_crlf(data: bytes): bytes {
+    var out: list[int] = [];
+    var previous = -1;
+    for (k in 0..data.len()) {
+        let b = data[k];
+        if (b == LF and previous != CR) {
+            out.push(CR);
+        }
+        out.push(b);
+        previous = b;
+    }
+    return bytesFromInts(out);
+}
+
+## `data` cut after each line feed: every piece but possibly the last ends
+## with one, and joined back they are `data`.
+pub func split_lines(data: bytes): list[bytes] {
+    var pieces: list[bytes] = [];
+    var start = 0;
+    for (k in 0..data.len()) {
+        if (data[k] == LF) {
+            pieces.push(data.slice(start, k + 1));
+            start = k + 1;
+        }
+    }
+    if (start < data.len()) {
+        pieces.push(data.slice(start, data.len()));
+    }
+    return pieces;
+}
+
+## How many bytes a UTF-8 sequence that starts with `lead` has: 1 to 4, or 0
+## for a byte that cannot start one (a continuation byte, 0xF8 and up).
+pub func sequence_length(lead: int): int {
+    if (lead < 0x80) {
+        return 1;
+    }
+    if (lead >= 0xC0 and lead < 0xE0) {
+        return 2;
+    }
+    if (lead >= 0xE0 and lead < 0xF0) {
+        return 3;
+    }
+    if (lead >= 0xF0 and lead < 0xF8) {
+        return 4;
+    }
+    return 0;
+}
+
+## The length of the longest prefix of `data` that does not end inside a
+## multi-byte character: `data.len()`, or less when the last one or two or
+## three bytes are the start of a character whose rest has not arrived yet.
+## Bytes that are not UTF-8 at all are not held back (they could never be
+## completed).
+pub func utf8_complete(data: bytes): int {
+    let n = data.len();
+    # Walk back over at most three continuation bytes (10xxxxxx) to the
+    # byte that should lead the last character.
+    var lead_at = n - 1;
+    while (lead_at >= 0 and n - lead_at <= 3 and data[lead_at] >= 0x80 and data[lead_at] < 0xC0) {
+        lead_at -= 1;
+    }
+    if (lead_at < 0) {
+        return n;
+    }
+    let needed = sequence_length(data[lead_at]);
+    if (needed > n - lead_at) {
+        return lead_at;
+    }
+    return n;
+}
+
+## Join byte strings (`bytes` has no `+`).
+pub func concat(first: bytes, second: bytes): bytes {
+    var all: list[int] = first.toList();
+    for (k in 0..second.len()) {
+        all.push(second[k]);
+    }
+    return bytesFromInts(all);
+}

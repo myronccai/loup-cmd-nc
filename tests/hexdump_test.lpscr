@@ -1,0 +1,56 @@
+@mode(host.scripted)
+
+# Unit tests for nc's -o hex dump (lib/hexdump.loup): hexadecimal digits,
+# the text column, full and short lines, offsets and directions.
+#
+# Runtime: host.scripted, run by the test runner: `make test` interprets
+# this file with Stage0 (`loup-bootstrap test --no-parallel --file
+# tests/hexdump_test.lpscr`), one test per `func test_*()`. It imports lib/
+# by relative path; it is not part of the program.
+
+from debug.assert import (expect, expectEq);
+from ..lib.hexdump import (hex, shown, dump_lines, SENT, RECEIVED);
+
+func test_hex(): void {
+    expectEq(hex(0, 2), "00", "zero");
+    expectEq(hex(10, 2), "0a", "lowercase");
+    expectEq(hex(255, 2), "ff", "a byte");
+    expectEq(hex(16, 8), "00000010", "offset");
+    expectEq(hex(0x12345678, 8), "12345678", "full width");
+    expectEq(hex(0x123456789, 8), "123456789", "wider than asked");
+}
+
+func test_shown(): void {
+    expectEq(shown(65), "A", "letter");
+    expectEq(shown(32), " ", "space");
+    expectEq(shown(126), "~", "tilde");
+    expectEq(shown(10), ".", "line feed");
+    expectEq(shown(127), ".", "delete");
+    expectEq(shown(0xC3), ".", "not ASCII");
+}
+
+func test_full_line(): void {
+    let lines = dump_lines(SENT, 0, b"GET / HTTP/1.0\r\n");
+    expectEq(lines.len(), 1, "sixteen bytes");
+    expectEq(lines[0], "> 00000000 47 45 54 20 2f 20 48 54 54 50 2f 31 2e 30 0d 0a # GET / HTTP/1.0..", "line");
+}
+
+func test_short_line_padding(): void {
+    let lines = dump_lines(RECEIVED, 0, b"OK\n");
+    expectEq(lines[0], "< 00000000 4f 4b 0a                                        # OK.", "padded");
+    # The text column starts at the same place on every line.
+    let full = dump_lines(RECEIVED, 0, b"0123456789abcdef")[0];
+    expectEq(lines[0].index_of("#"), full.index_of("#"), "aligned");
+}
+
+func test_offsets_and_wrapping(): void {
+    let lines = dump_lines(RECEIVED, 0x20, b"0123456789abcdefXYZ");
+    expectEq(lines.len(), 2, "two lines");
+    expect(lines[0].startsWith("< 00000020 30 31"), "starts at the given offset");
+    expect(lines[1].startsWith("< 00000030 58 59 5a "), "second line continues the offset");
+    expect(lines[1].endsWith("# XYZ"), "second line text");
+}
+
+func test_empty(): void {
+    expectEq(dump_lines(SENT, 0, b"").len(), 0, "no lines for no data");
+}

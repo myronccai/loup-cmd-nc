@@ -1,0 +1,22 @@
+@mode(host.dual)
+
+# nc's name, version and exit statuses.
+#
+# Runtime: host.dual, but only ever interpreted here, by Stage0:
+# bin/nc.lpscr imports it under `loup-bootstrap run --allow-net`, and the
+# unit tests through other lib/ modules under `loup-bootstrap test`. Nothing
+# in this project compiles it.
+
+pub const APP_NAME: string = "nc";
+pub const APP_VERSION: string = "0.1.0";
+pub const APP_SUMMARY: string = "netcat for TCP: connect, listen and scan ports";
+
+# OpenBSD netcat has two statuses: 0, and 1 for everything that went wrong,
+# usage errors included.
+pub const EXIT_OK: int = 0;
+pub const EXIT_FAILURE: int = 1;
+
+# Where service names (`ssh`, `http`) are looked up unless $NC_SERVICES
+# names another file.
+pub const DEFAULT_SERVICES: string = "/etc/services";
+pub const SERVICES_ENV: string = "NC_SERVICES";
