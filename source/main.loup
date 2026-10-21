@@ -1,0 +1,10 @@
+@mode(host.dual)
+
+# Entry point. Keep this file thin: all behaviour lives in cli.app.run so
+# that tests can call it with an argument list.
+
+from cli.app import (run);
+
+func main(): int {
+    return run(runtime.args());
+}

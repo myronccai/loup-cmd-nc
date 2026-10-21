@@ -1,0 +1,64 @@
+@mode(host.dual)
+
+from debug.assert import (expect, expectEq);
+from cli.args import (parse_args, DEFAULT_GREETING);
+
+func test_no_arguments(): void {
+    let none: list[string] = [];
+    let opts = parse_args(none).unwrap();
+    expectEq(opts.command, "", "no command");
+    expectEq(opts.operands.len(), 0, "no operands");
+    expectEq(opts.greeting, DEFAULT_GREETING, "default greeting");
+    expect(!opts.help and !opts.version and !opts.verbose and !opts.shout, "no flags set");
+}
+
+func test_command_and_operands(): void {
+    let opts = parse_args(["hello", "Ann"]).unwrap();
+    expectEq(opts.command, "hello", "command");
+    expectEq(opts.operands.len(), 1, "one operand");
+    expectEq(opts.operands[0], "Ann", "operand");
+}
+
+func test_flags_anywhere(): void {
+    let opts = parse_args(["-v", "hello", "--shout", "Ann"]).unwrap();
+    expect(opts.verbose, "verbose");
+    expect(opts.shout, "shout");
+    expectEq(opts.command, "hello", "command");
+    expectEq(opts.operands[0], "Ann", "operand");
+}
+
+func test_help_and_version(): void {
+    expect(parse_args(["--help"]).unwrap().help, "--help");
+    expect(parse_args(["-h"]).unwrap().help, "-h");
+    expect(parse_args(["--version"]).unwrap().version, "--version");
+    expect(parse_args(["-V"]).unwrap().version, "-V");
+}
+
+func test_value_option_forms(): void {
+    expectEq(parse_args(["-g", "Hi"]).unwrap().greeting, "Hi", "-g VALUE");
+    expectEq(parse_args(["--greeting", "Hi"]).unwrap().greeting, "Hi", "--greeting VALUE");
+    expectEq(parse_args(["--greeting=a=b"]).unwrap().greeting, "a=b", "--greeting=VALUE keeps '='");
+}
+
+func test_double_dash_ends_options(): void {
+    let opts = parse_args(["hello", "--", "--shout"]).unwrap();
+    expect(!opts.shout, "--shout after -- is an operand");
+    expectEq(opts.operands[0], "--shout", "operand");
+}
+
+func test_lone_dash_is_operand(): void {
+    let opts = parse_args(["hello", "-"]).unwrap();
+    expectEq(opts.operands[0], "-", "operand");
+}
+
+func test_unknown_option(): void {
+    expectEq(parse_args(["--nope"]).unwrap_err(), "unknown option '--nope'", "error message");
+}
+
+func test_missing_value(): void {
+    expectEq(parse_args(["-g"]).unwrap_err(), "option '-g' requires a value", "error message");
+}
+
+func test_flag_with_value(): void {
+    expectEq(parse_args(["--shout=1"]).unwrap_err(), "option '--shout' does not take a value", "error message");
+}

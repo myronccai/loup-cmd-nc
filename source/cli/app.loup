@@ -1,0 +1,54 @@
+@mode(host.dual)
+
+from appinfo import (APP_NAME, EXIT_OK, EXIT_FAILURE, EXIT_USAGE);
+from cli.args import (Options, parse_args);
+from cli.usage import (usage, version_line);
+from commands.hello import (run_hello);
+
+# Parses argv, runs the selected command and returns the exit status.
+pub func run(argv: list[string]): int {
+    let opts = match parse_args(argv) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            return usage_error(msg);
+        },
+    };
+
+    if (opts.help) {
+        println(usage());
+        return EXIT_OK;
+    }
+    if (opts.version) {
+        println(version_line());
+        return EXIT_OK;
+    }
+    if (opts.verbose) {
+        printErr(i"{$ APP_NAME $}: command '{$ opts.command $}', operands {$ opts.operands $}");
+    }
+
+    try {
+        return dispatch(opts);
+    } catch (Exception as e) {
+        printErr(i"{$ APP_NAME $}: error: {$ e.message $}");
+        return EXIT_FAILURE;
+    }
+}
+
+# Add new commands here and to the help text in cli/usage.loup.
+func dispatch(opts: Options): int {
+    return match opts.command {
+        "hello" => run_hello(opts),
+        "help" => {
+            println(usage());
+            EXIT_OK
+        },
+        "" => usage_error("no command given"),
+        other => usage_error(i"unknown command '{$ other $}'"),
+    };
+}
+
+func usage_error(msg: string): int {
+    printErr(i"{$ APP_NAME $}: {$ msg $}");
+    printErr(i"Try '{$ APP_NAME $} --help' for more information.");
+    return EXIT_USAGE;
+}

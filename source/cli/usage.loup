@@ -1,0 +1,28 @@
+@mode(host.dual)
+
+from appinfo import (APP_NAME, APP_VERSION, APP_SUMMARY);
+from cli.args import (DEFAULT_GREETING);
+
+pub func usage(): string {
+    let lines = [
+        i"usage: {$ APP_NAME $} [OPTIONS] COMMAND [ARGS...]",
+        "",
+        APP_SUMMARY,
+        "",
+        "Commands:",
+        "  hello [NAME]          Print a greeting (NAME defaults to 'world')",
+        "  help                  Show this help",
+        "",
+        "Options:",
+        i"  -g, --greeting TEXT   Greeting used by 'hello' (default: {$ DEFAULT_GREETING $})",
+        "      --shout           Print the greeting in upper case",
+        "  -v, --verbose         Print diagnostic messages to stderr",
+        "  -h, --help            Show this help and exit",
+        "  -V, --version         Show the version and exit",
+    ];
+    return lines.join("\n");
+}
+
+pub func version_line(): string {
+    return i"{$ APP_NAME $} {$ APP_VERSION $}";
+}

@@ -1,0 +1,5 @@
+# Build output
+/build/
+
+# Loup toolchain scratch files (partial IR from failed native builds)
+/.temp/

@@ -1,0 +1,25 @@
+@mode(host.dual)
+
+# Exit statuses of the whole command line. These tests print the program's
+# normal output and error messages.
+
+from debug.assert import (expectEq);
+from appinfo import (EXIT_OK, EXIT_USAGE);
+from cli.app import (run);
+
+func test_version_succeeds(): void {
+    expectEq(run(["--version"]), EXIT_OK, "--version");
+}
+
+func test_hello_succeeds(): void {
+    expectEq(run(["hello", "tests"]), EXIT_OK, "hello NAME");
+}
+
+func test_unknown_command_is_usage_error(): void {
+    expectEq(run(["bogus"]), EXIT_USAGE, "unknown command");
+}
+
+func test_missing_command_is_usage_error(): void {
+    let none: list[string] = [];
+    expectEq(run(none), EXIT_USAGE, "no command");
+}

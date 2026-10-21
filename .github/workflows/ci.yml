@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Keep in step with `loup` in package.lppkg.
+      LOUP_VERSION: "1.26.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Loup ${{ env.LOUP_VERSION }}
+        run: |
+          curl -fsSL "https://github.com/code-craft-ai-company/loup-releases/releases/download/v${LOUP_VERSION}/loup-install.sh" \
+            | sh -s -- --version "${LOUP_VERSION}" --no-modify-path -y
+          echo "$HOME/.loup/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: |
+          loup --version
+          clang --version
+
+      - name: Check, test and build
+        run: make ci
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: myapp-linux-x86_64
+          path: build/myapp
+          if-no-files-found: error

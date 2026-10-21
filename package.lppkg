@@ -1,0 +1,16 @@
+name = "myapp"
+version = "0.1.0"
+loup = "1.26.0"
+authors = []
+
+[build]
+entry = "source/main.loup"
+delivery = "cli"
+profile = "release"
+
+[dependencies]
+
+[test]
+pattern = "**/*_test.loup"
+parallel = true
+timeout = 30
